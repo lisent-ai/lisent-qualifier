@@ -15,6 +15,9 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - dokploy-network
 
   redis:
     image: redis:7.4-alpine
@@ -51,3 +54,7 @@ services:
 volumes:
   redis_data:
   pg_data:
+
+networks:
+  dokploy-network:
+    external: true
