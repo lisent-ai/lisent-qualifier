@@ -18,6 +18,7 @@ from app.api.webhook.router import router as webhook_router
 from app.api.chat.router import router as chat_router
 from app.api.health.router import router as health_router
 from app.api.whatsapp.router import router as whatsapp_router
+from app.api.leads.router import router as leads_router
 
 import logging
 import sys
@@ -119,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router)
     app.include_router(chat_router)
     app.include_router(whatsapp_router)
+    app.include_router(leads_router)
 
     # Prometheus metrics endpoint
     metrics_app = make_asgi_app()

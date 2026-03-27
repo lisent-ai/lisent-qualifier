@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     crm_base_url: str = ""
     crm_api_key: str = ""
 
+    # Internal API key (leads listing endpoint için)
+    internal_api_key: str = ""
+
     # PostgreSQL (ai-lead-qualifier kendi instance'ı)
     database_url: str = "postgresql://app:qualifierpass@db:5432/lead_qualifier"
 

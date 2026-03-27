@@ -51,6 +51,37 @@ async def upsert_lead(
     return db_id
 
 
+async def list_leads(
+    pool: asyncpg.Pool,
+    *,
+    company_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    rows = await pool.fetch(
+        """
+        SELECT id, lead_id, phone, name, email, city,
+               source, project_type, budget_range,
+               score, path, status, raw_payload, created_at, updated_at
+        FROM qualifier_leads
+        WHERE company_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+        """,
+        company_id, limit, offset,
+    )
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["id"] = str(d["id"])
+        d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
+        d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
+        if isinstance(d["raw_payload"], str):
+            d["raw_payload"] = json.loads(d["raw_payload"])
+        result.append(d)
+    return result
+
+
 async def update_lead_status(
     pool: asyncpg.Pool,
     *,
