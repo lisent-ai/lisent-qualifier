@@ -49,11 +49,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     log.info("startup", env=settings.app_env)
 
     # Initialize Redis pool
-    create_redis_pool(settings.redis_dsn)
-    log.info("redis_pool_created", dsn=settings.redis_dsn)
+    try:
+        create_redis_pool(settings.redis_dsn)
+        log.info("redis_pool_created", dsn=settings.redis_dsn)
+    except Exception as exc:
+        log.warning("redis_pool_failed", error=str(exc))
 
     # Initialize PostgreSQL pool
-    await init_db_pool(settings.database_url)
+    try:
+        await init_db_pool(settings.database_url)
+        log.info("db_pool_created")
+    except Exception as exc:
+        log.warning("db_pool_failed", error=str(exc))
 
     # Start CRM outbox flusher
     outbox_task = asyncio.create_task(_outbox_flusher())
