@@ -2,7 +2,7 @@
 qualifier_leads tablosuna yazma/okuma işlemleri.
 """
 import json
-from uuid import UUID
+from typing import Any
 
 import asyncpg
 import structlog
@@ -17,34 +17,24 @@ async def upsert_lead(
     lead_id: str,
     phone: str,
     name: str = "",
-    email: str = "",
-    city: str = "",
-    source: str = "other",
-    project_type: str = "other",
-    budget_range: str = "unknown",
     score: int = 0,
     path: str = "chat",
-    raw_payload: dict,
+    extra_data: dict | None = None,
 ) -> str:
-    """
-    qualifier_leads tablosuna lead ekler. lead_id zaten varsa score ve path günceller.
-    Eklenen/güncellenen satırın UUID'sini döner.
-    """
     row = await pool.fetchrow(
         """
         INSERT INTO qualifier_leads
-          (company_id, lead_id, phone, name, email, city,
-           source, project_type, budget_range, score, path, raw_payload)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          (company_id, lead_id, phone, name, score, path, extra_data)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
         ON CONFLICT (company_id, lead_id) DO UPDATE
-          SET score       = EXCLUDED.score,
-              path        = EXCLUDED.path,
-              updated_at  = now()
+          SET score      = EXCLUDED.score,
+              path       = EXCLUDED.path,
+              extra_data = EXCLUDED.extra_data,
+              updated_at = now()
         RETURNING id
         """,
-        company_id, lead_id, phone, name, email, city,
-        source, project_type, budget_range, score, path,
-        json.dumps(raw_payload),
+        company_id, lead_id, phone, name, score, path,
+        json.dumps(extra_data or {}),
     )
     db_id = str(row["id"])
     log.info("qualifier_lead_upserted", db_id=db_id, lead_id=lead_id, score=score)
@@ -60,9 +50,8 @@ async def list_leads(
 ) -> list[dict]:
     rows = await pool.fetch(
         """
-        SELECT id, lead_id, phone, name, email, city,
-               source, project_type, budget_range,
-               score, path, status, raw_payload, created_at, updated_at
+        SELECT id, lead_id, phone, name, score, path, status,
+               extra_data, created_at, updated_at
         FROM qualifier_leads
         WHERE company_id = $1
         ORDER BY created_at DESC
@@ -76,8 +65,8 @@ async def list_leads(
         d["id"] = str(d["id"])
         d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
         d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
-        if isinstance(d["raw_payload"], str):
-            d["raw_payload"] = json.loads(d["raw_payload"])
+        if isinstance(d["extra_data"], str):
+            d["extra_data"] = json.loads(d["extra_data"])
         result.append(d)
     return result
 

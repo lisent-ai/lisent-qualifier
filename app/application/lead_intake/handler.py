@@ -30,23 +30,36 @@ log = structlog.get_logger(__name__)
 _scorer = RuleBasedScorer()
 
 
+def _safe(enum_cls, value, default):
+    try:
+        return enum_cls(value)
+    except (ValueError, KeyError):
+        return default
+
+
 def _build_lead(data: dict[str, Any]) -> Lead:
+    # extra_data içindeki tüm alanlara bak, bulamazsa default kullan
+    extra = data.get("extra_data", {})
+
+    def get(key: str, default: Any = "") -> Any:
+        return data.get(key) or extra.get(key) or default
+
     contact = ContactInfo(
-        name=data.get("name", ""),
-        phone=data.get("phone", ""),
-        email=data.get("email", ""),
-        city=data.get("city", ""),
+        name=get("name"),
+        phone=get("phone"),
+        email=get("email"),
+        city=get("city"),
     )
     return Lead(
-        id=data.get("lead_id", str(uuid.uuid4())),
-        source=LeadSource(data.get("source", LeadSource.OTHER)),
+        id=get("lead_id") or str(uuid.uuid4()),
+        source=_safe(LeadSource, get("source"), LeadSource.OTHER),
         contact=contact,
-        project_type=ProjectType(data.get("project_type", ProjectType.OTHER)),
-        budget_range=BudgetRange(data.get("budget_range", BudgetRange.UNKNOWN)),
-        decision_authority=DecisionAuthority(data.get("decision_authority", DecisionAuthority.UNKNOWN)),
-        timeline_urgency=TimelineUrgency(data.get("timeline_urgency", TimelineUrgency.UNKNOWN)),
-        budget_amount=data.get("budget_amount"),
-        notes=data.get("notes", ""),
+        project_type=_safe(ProjectType, get("project_type"), ProjectType.OTHER),
+        budget_range=_safe(BudgetRange, get("budget_range"), BudgetRange.UNKNOWN),
+        decision_authority=_safe(DecisionAuthority, get("decision_authority"), DecisionAuthority.UNKNOWN),
+        timeline_urgency=_safe(TimelineUrgency, get("timeline_urgency"), TimelineUrgency.UNKNOWN),
+        budget_amount=get("budget_amount", None),
+        notes=get("notes"),
         raw_payload=data,
     )
 

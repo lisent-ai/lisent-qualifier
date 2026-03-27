@@ -29,12 +29,17 @@ async def receive_lead(
     company_id = str(company_info["company_id"])
     fallback_url: str | None = company_info.get("fallback_url")
 
+    extra = payload.extra_data()
+
     # Mevcut AI akışını çalıştır
     handler = get_lead_intake_handler(session_repo, score_repo)
-    cmd = ProcessWebhookLeadCommand(lead_data=payload.model_dump(), fallback_url=fallback_url)
+    cmd = ProcessWebhookLeadCommand(
+        lead_data={"name": payload.name, "phone": payload.phone, "lead_id": payload.lead_id, "extra_data": extra},
+        fallback_url=fallback_url,
+    )
     result = await handler.handle(cmd)
 
-    # PostgreSQL'e kaydet (fire-and-forget değil, await et)
+    # PostgreSQL'e kaydet
     try:
         pool = get_db_pool()
         await upsert_lead(
@@ -43,17 +48,11 @@ async def receive_lead(
             lead_id=payload.lead_id,
             phone=payload.phone,
             name=payload.name,
-            email=payload.email,
-            city=payload.city,
-            source=payload.source,
-            project_type=payload.project_type,
-            budget_range=payload.budget_range,
             score=result.get("score", 0),
             path=result.get("status", "chat").replace("_path", ""),
-            raw_payload=payload.model_dump(),
+            extra_data=extra,
         )
     except Exception as exc:
-        # DB hatası akışı durdurmamalı
         log.error("qualifier_db_write_failed", error=str(exc), lead_id=payload.lead_id)
 
     return result
