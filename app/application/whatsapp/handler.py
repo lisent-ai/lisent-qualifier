@@ -58,6 +58,7 @@ class WhatsAppMessageHandler:
         sender_name: str,
         text: str,
         _recursion: bool = False,
+        integration: Optional[dict] = None,
     ) -> dict:
         redis = self._session_repo._r
 
@@ -68,8 +69,9 @@ class WhatsAppMessageHandler:
             log.info("whatsapp_duplicate_ignored", id_message=id_message)
             return {"status": "duplicate"}
 
-        # 2. CRM'den instance → şirket bilgisi
-        integration = await lookup_greenapi_integration(id_instance)
+        # 2. CRM'den instance → şirket bilgisi (router'dan geçilmişse tekrar sorgulanmaz)
+        if integration is None:
+            integration = await lookup_greenapi_integration(id_instance)
         if not integration:
             log.warning("greenapi_instance_not_found", id_instance=id_instance)
             return {"status": "unknown_instance"}
@@ -114,6 +116,7 @@ class WhatsAppMessageHandler:
                 return await self.handle(
                     id_instance, id_message, phone, chat_id, sender_name, text,
                     _recursion=True,
+                    integration=integration,
                 )
             log.warning("whatsapp_session_error", error=result["error"], session_id=session_id)
             return {"status": "error", "detail": result["error"]}
