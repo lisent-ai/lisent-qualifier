@@ -28,7 +28,7 @@ class Lead:
     received_at: datetime = field(default_factory=datetime.utcnow, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "source": str(self.source),
             "contact": {
@@ -45,3 +45,11 @@ class Lead:
             "notes": self.notes,
             "received_at": self.received_at.isoformat(),
         }
+        # Include all extra form data so the LLM can see it
+        extra = self.raw_payload.get("extra_data", {})
+        if extra:
+            result["form_data"] = extra
+        # Include raw_payload for handoff enrichment
+        if self.raw_payload:
+            result["raw_payload"] = self.raw_payload
+        return result

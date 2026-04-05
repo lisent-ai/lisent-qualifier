@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 
     # Scoring
     high_threshold: int = Field(default=80, ge=0, le=100)
-    bant_extract_every_n_messages: int = Field(default=3, ge=1)
+    champ_extract_every_n_messages: int = Field(default=3, ge=1)
 
     # Redis
     redis_dsn: str = "redis://localhost:6379/0"
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # Local LLM
     local_llm_url: str = "http://host.docker.internal:8080"
     local_llm_model: str = "qwen3.5-9b"   # override to "qwen3:4b" for Ollama dev
-    local_llm_timeout_bant: int = 60
+    local_llm_timeout_champ: int = 60
     local_llm_timeout_reasoning: int = 45
 
     # CRM Webhook (lead handoff)
@@ -45,6 +45,15 @@ class Settings(BaseSettings):
 
     # PostgreSQL (ai-lead-qualifier kendi instance'ı)
     database_url: str = "postgresql://app:qualifierpass@db:5432/lead_qualifier"
+
+    # Qualification Judge
+    qualification_judge_model: str = "openai/gpt-oss-120b"
+    qualification_judge_timeout: int = 30
+    qualification_judge_max_tokens: int = 2048
+    judge_borderline_low: int = 40
+    judge_borderline_high: int = 70
+    judge_self_consistency_passes: int = 3
+    judge_fallback_to_champ: bool = True
 
     # GreenAPI / WhatsApp
     greenapi_base_url: str = "https://api.green-api.com"

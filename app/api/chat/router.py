@@ -9,7 +9,8 @@ from sse_starlette.sse import EventSourceResponse
 from app.api.chat.schemas import ChatMessageRequest, ChatMessageResponse
 from app.api.deps import SessionRepoDep, ScoreRepoDep, get_conversation_handler
 from app.application.conversation.commands import SendMessageCommand
-from app.application.scoring.bant_extractor import extract_bant_task
+from app.application.scoring.champ_extractor import extract_champ_task
+from app.application.qualification.handler import HandoffHandler
 from app.infrastructure.redis.client import get_redis
 
 log = structlog.get_logger(__name__)
@@ -32,16 +33,24 @@ async def send_message(
     if "error" in result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result["error"])
 
-    bant_scheduled = False
-    if result.get("should_extract_bant"):
-        background_tasks.add_task(extract_bant_task, session_id, session_repo, score_repo)
-        bant_scheduled = True
+    champ_scheduled = False
+    handoff_triggered = False
+
+    if result.get("should_force_handoff"):
+        # Max messages reached — trigger handoff immediately
+        handoff_handler = HandoffHandler(session_repo, score_repo)
+        background_tasks.add_task(handoff_handler.handle, session_id)
+        handoff_triggered = True
+    elif result.get("should_extract_champ"):
+        background_tasks.add_task(extract_champ_task, session_id, session_repo, score_repo)
+        champ_scheduled = True
 
     return {
         "status": "ok",
         "session_id": session_id,
         "msg_count": result["msg_count"],
-        "bant_scheduled": bant_scheduled,
+        "champ_scheduled": champ_scheduled,
+        "handoff_triggered": handoff_triggered,
     }
 
 
@@ -80,7 +89,7 @@ async def score_stream(
     session_id: str,
     request: Request,
 ) -> EventSourceResponse:
-    """SSE stream for score updates from BANT extraction (Redis PubSub)."""
+    """SSE stream for score updates from CHAMP extraction (Redis PubSub)."""
 
     async def pubsub_generator() -> AsyncGenerator[dict, None]:
         redis = get_redis()
