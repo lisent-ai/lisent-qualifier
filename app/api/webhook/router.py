@@ -5,7 +5,11 @@ from fastapi.responses import JSONResponse
 
 from app.api.deps import get_lead_intake_handler, SessionRepoDep, ScoreRepoDep
 from app.application.lead_intake.commands import ProcessWebhookLeadCommand
-from app.infrastructure.crm.rest_client import lookup_company_by_qualifier_token
+from app.infrastructure.crm.rest_client import (
+    lookup_company_by_qualifier_token,
+    lookup_company_by_rag_token,
+    store_webhook_data,
+)
 from app.infrastructure.db.pool import get_db_pool
 from app.infrastructure.db.lead_repo import upsert_lead, check_phone_duplicate
 from app.infrastructure.llm.field_mapper import map_fields
@@ -138,6 +142,38 @@ async def receive_lead(
         log.error("qualifier_db_write_failed", error=str(exc), lead_id=lead_id)
 
     return result
+
+
+@router.post("/rag/{token}", status_code=status.HTTP_202_ACCEPTED)
+async def receive_rag_data(token: str, request: Request) -> dict:
+    """Accept any JSON payload and store it as RAG knowledge for the company."""
+    body = await request.body()
+    if len(body) > _MAX_BODY_SIZE:
+        return JSONResponse({"error": "payload too large"}, status_code=413)
+
+    import json as _json
+    try:
+        payload = _json.loads(body)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    # Token → company_id
+    company_info = await lookup_company_by_rag_token(token)
+    if not company_info:
+        log.warning("rag_token_invalid", token=token[-8:])
+        return JSONResponse({"error": "invalid token"}, status_code=401)
+
+    company_id = str(company_info["company_id"])
+
+    # Store in CRM
+    try:
+        result = await store_webhook_data(company_id, payload)
+        log.info("rag_webhook_stored", company_id=company_id, data_id=result.get("id") if result else None)
+    except Exception as exc:
+        log.error("rag_webhook_store_failed", error=str(exc), company_id=company_id)
+        return JSONResponse({"error": "failed to store data"}, status_code=502)
+
+    return {"status": "accepted", "company_id": company_id}
 
 
 async def _upsert_session(

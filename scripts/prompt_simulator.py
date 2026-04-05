@@ -85,9 +85,12 @@ class SimConfig:
     working_hours: str = ""
     pricing_hints: str = ""
     kb_content: str = ""
+    webhook_data_content: str = ""
     forbidden_topics: list = field(default_factory=list)
     faq_entries: list = field(default_factory=list)
     custom_qualifying_questions: list = field(default_factory=list)
+    ideal_customer_profile: str = ""
+    handoff_aggressiveness: str = "balanced"
 
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "SimConfig":
@@ -115,6 +118,9 @@ class SimConfig:
         cfg.working_hours = os.environ.get("SIM_WORKING_HOURS", "")
         cfg.pricing_hints = os.environ.get("SIM_PRICING_HINTS", "")
         cfg.kb_content = os.environ.get("SIM_KB_CONTENT", "")
+        cfg.webhook_data_content = os.environ.get("SIM_WEBHOOK_DATA_CONTENT", "")
+        cfg.ideal_customer_profile = os.environ.get("SIM_IDEAL_CUSTOMER_PROFILE", "")
+        cfg.handoff_aggressiveness = os.environ.get("SIM_HANDOFF_AGGRESSIVENESS", "balanced")
 
         poll = os.environ.get("SIM_POLL_INTERVAL")
         if poll:
@@ -283,6 +289,11 @@ class PromptBuilder:
     ) -> str:
         from app.domain.conversation.prompts import build_chat_system_prompt
 
+        # Merge KB content with webhook data content
+        kb = self.cfg.kb_content
+        if self.cfg.webhook_data_content:
+            kb = (kb + "\n\n---\n\n" + self.cfg.webhook_data_content) if kb else self.cfg.webhook_data_content
+
         company_config = {
             "primary_language": self.cfg.language,
             "industry_focus": self.cfg.sector,
@@ -291,10 +302,12 @@ class PromptBuilder:
             "custom_persona": self.cfg.persona,
             "working_hours": self.cfg.working_hours,
             "pricing_hints": self.cfg.pricing_hints,
-            "kb_documents_content": self.cfg.kb_content,
+            "kb_documents_content": kb,
             "forbidden_topics": self.cfg.forbidden_topics,
             "faq_entries": self.cfg.faq_entries,
             "custom_qualifying_questions": self.cfg.custom_qualifying_questions,
+            "ideal_customer_profile": self.cfg.ideal_customer_profile,
+            "handoff_aggressiveness": self.cfg.handoff_aggressiveness,
         }
 
         return build_chat_system_prompt(lead_json, champ_json, company_config)
@@ -346,7 +359,39 @@ class PromptSimulator:
         self._seen: set[str] = set()  # dedup: id_message'ler
         self._running = True
 
+    async def _send_greeting(self, phone: str) -> None:
+        """Form gelmiş gibi ilk selamlama mesajını AI üzerinden gönder."""
+        session = self.sessions.get_or_create(phone, self.cfg.fake_lead)
+
+        print(f"  [GREETING] {phone} numarasına ilk mesaj gönderiliyor...")
+
+        # System prompt oluştur (conversation history boş → İLK MESAJ KURALI tetiklenir)
+        system_prompt = self.prompts.build_system_prompt(
+            lead_json=session.lead_json,
+            champ_json=None,
+        )
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        try:
+            ai_response = await self.groq.chat(messages)
+        except Exception as exc:
+            print(f"  [ERROR] Groq greeting hatası: {exc}")
+            return
+
+        # Assistant yanıtını session'a kaydet
+        session.messages.append({"role": "assistant", "content": ai_response})
+
+        print(f"  [AI] �� {phone}: {ai_response[:120]}...")
+
+        # WhatsApp'a gönder
+        chat_id = f"{phone}@c.us"
+        await self.greenapi.send_split_message(chat_id, ai_response)
+        print(f"  [GREETING] İlk mesaj gönderildi. Yanıt bekleniyor...\n")
+
     async def run(self) -> None:
+        target_phone = self.cfg.fake_lead.get("phone", "")
+
         print("=" * 60)
         print("  PROMPT SIMULATOR")
         print("=" * 60)
@@ -355,10 +400,17 @@ class PromptSimulator:
         print(f"  Dil / Sektör      : {self.cfg.language} / {self.cfg.sector}")
         print(f"  Şirket            : {self.cfg.company_name}")
         print(f"  Ton               : {self.cfg.tone}")
+        print(f"  Hedef Telefon     : {target_phone or '(yok — pasif mod)'}")
         print(f"  Poll Aralığı      : {self.cfg.poll_interval}s")
         print(f"  Debounce          : {self.cfg.debounce_seconds}s")
         print("=" * 60)
-        print("  WhatsApp'tan mesaj bekleniyor... (Ctrl+C ile durdur)\n")
+
+        # Telefon numarası varsa → form gelmiş gibi ilk mesajı gönder
+        if target_phone:
+            print(f"  Form simülasyonu başlatılıyor → {target_phone}\n")
+            await self._send_greeting(target_phone)
+        else:
+            print("  WhatsApp'tan mesaj bekleniyor... (Ctrl+C ile durdur)\n")
 
         try:
             while self._running:

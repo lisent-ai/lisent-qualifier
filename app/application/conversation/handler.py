@@ -15,7 +15,11 @@ from app.infrastructure.redis.score_repo import ScoreRepository
 from app.infrastructure.llm.groq_client import stream_chat
 from app.application.scoring.champ_extractor import extract_champ_task
 from app.application.conversation.commands import SendMessageCommand
-from app.infrastructure.crm.rest_client import fetch_company_kb_documents, fetch_company_ai_config
+from app.infrastructure.crm.rest_client import (
+    fetch_company_kb_documents,
+    fetch_company_ai_config,
+    fetch_company_webhook_data,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -130,6 +134,27 @@ class ConversationHandler:
                         company_config = {**company_config, "kb_documents_content": combined[:4000]}
             except Exception as exc:
                 log.warning("kb_documents_fetch_failed", error=str(exc))
+
+        # Fetch webhook data and merge into KB content
+        if session.company_id and company_config is not None:
+            try:
+                import json as _json
+                webhook_data = await fetch_company_webhook_data(session.company_id)
+                if webhook_data:
+                    webhook_combined = "\n\n---\n\n".join(
+                        f"[webhook:{entry.get('id', 'unknown')}]\n"
+                        + _json.dumps(entry.get("payload", {}), ensure_ascii=False, indent=2)
+                        for entry in webhook_data
+                    )
+                    if webhook_combined:
+                        existing_kb = company_config.get("kb_documents_content", "")
+                        separator = "\n\n---\n\n" if existing_kb else ""
+                        company_config = {
+                            **company_config,
+                            "kb_documents_content": (existing_kb + separator + webhook_combined)[:4000],
+                        }
+            except Exception as exc:
+                log.warning("webhook_data_fetch_failed", error=str(exc))
 
         system_prompt = build_chat_system_prompt(session.lead_json, session.champ_json, company_config)
         messages = [{"role": "system", "content": system_prompt}]

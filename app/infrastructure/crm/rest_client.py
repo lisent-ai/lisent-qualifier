@@ -101,6 +101,70 @@ async def fetch_company_kb_documents(company_id: str) -> list[dict] | None:
         return []
 
 
+async def lookup_company_by_rag_token(token: str) -> Optional[dict]:
+    """
+    RAG webhook token'ına göre company_id döner.
+    Geçersiz token için None döner.
+    Başarılı: {"company_id": "..."}
+    """
+    try:
+        client = _get_crm_rest_client()
+        resp = await client.get(f"/internal/company/lookup-by-rag-token/{token}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+    except RuntimeError as exc:
+        log.error("crm_rest_not_configured", error=str(exc))
+        return None
+    except Exception as exc:
+        log.error("crm_rag_token_lookup_failed", error=str(exc))
+        return None
+
+
+async def store_webhook_data(company_id: str, payload: object) -> Optional[dict]:
+    """
+    Gelen RAG webhook verisini CRM'e kaydet.
+    """
+    try:
+        client = _get_crm_rest_client()
+        resp = await client.post(
+            f"/internal/company/{company_id}/webhook-data",
+            json={"payload": payload, "label": ""},
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except RuntimeError as exc:
+        log.error("crm_rest_not_configured", error=str(exc))
+        return None
+    except Exception as exc:
+        log.error("crm_webhook_data_store_failed", error=str(exc), company_id=company_id)
+        return None
+
+
+async def fetch_company_webhook_data(company_id: str) -> list[dict] | None:
+    """
+    CRM'den company_id'ye göre webhook verilerini döner (prompt enjeksiyonu için).
+    """
+    try:
+        client = _get_crm_rest_client()
+        resp = await client.get(
+            f"/internal/company/{company_id}/webhook-data",
+            params={"include_content": "true"},
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except RuntimeError as exc:
+        log.error("crm_rest_not_configured", error=str(exc))
+        return []
+    except Exception as exc:
+        log.error("crm_webhook_data_fetch_failed", error=str(exc), company_id=company_id)
+        return []
+
+
 async def lookup_greenapi_by_company(company_id: str) -> Optional[dict]:
     """
     CRM'den company_id'ye göre GreenAPI credentials döner.

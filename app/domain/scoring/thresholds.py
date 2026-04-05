@@ -9,6 +9,22 @@ from typing import Any
 # Default fallback — kept for backward compat imports
 HIGH_THRESHOLD = 80
 
+# Aggressiveness → base threshold mapping
+AGGRESSIVENESS_MAP = {
+    "conservative": 85,
+    "balanced": 75,
+    "aggressive": 60,
+}
+
+
+def resolve_base_threshold(company_config: dict[str, Any] | None) -> int:
+    """Resolve base threshold from handoff_aggressiveness or legacy qualification_threshold."""
+    cfg = company_config or {}
+    aggressiveness = cfg.get("handoff_aggressiveness")
+    if aggressiveness and aggressiveness in AGGRESSIVENESS_MAP:
+        return AGGRESSIVENESS_MAP[aggressiveness]
+    return int(cfg.get("qualification_threshold", 75))
+
 
 def compute_threshold(
     project_type: str = "",
@@ -18,11 +34,10 @@ def compute_threshold(
     """
     Return the qualification threshold for a given lead profile.
 
-    Uses company_config["qualification_threshold"] as base (default 75).
+    Uses handoff_aggressiveness (preferred) or qualification_threshold as base.
     Adjusts +-10 based on project type and budget range.
     """
-    cfg = company_config or {}
-    base = int(cfg.get("qualification_threshold", 75))
+    base = resolve_base_threshold(company_config)
 
     # High-value commercial/industrial: sales team wants them fast
     if project_type in ("commercial", "industrial") and budget_range in (
