@@ -33,6 +33,7 @@ async def extract_champ_task(
     session_id: str,
     session_repo: SessionRepository,
     score_repo: ScoreRepository,
+    force_handoff: bool = False,
 ) -> None:
     """
     Idempotent extraction task.
@@ -168,7 +169,23 @@ async def extract_champ_task(
             }),
         )
 
-        # ── Handoff check (dynamic threshold) ────────────────────────────
+        # ── Handoff priority chain ────────────────────────────────────────
+        from app.application.qualification.handler import HandoffHandler
+
+        # Priority 1: Judge says ready (LLM decision, independent of score)
+        if scoring_mode in ("llm_judge", "hybrid") and champ_json.get("handoff_ready"):
+            log.info(
+                "judge_handoff_ready",
+                session_id=session_id,
+                score=new_score,
+                reason=champ_json.get("handoff_reason", ""),
+            )
+            HANDOFF_COUNTER.labels(path="chat_judge").inc()
+            handler = HandoffHandler(session_repo, score_repo)
+            await handler.handle(session_id)
+            return
+
+        # Priority 2: Score threshold (existing logic)
         lead_json = session.lead_json or {}
         extra = lead_json.get("extra_data", {})
         threshold = compute_threshold(
@@ -185,7 +202,18 @@ async def extract_champ_task(
                 threshold=threshold,
             )
             HANDOFF_COUNTER.labels(path="chat").inc()
-            from app.application.qualification.handler import HandoffHandler
+            handler = HandoffHandler(session_repo, score_repo)
+            await handler.handle(session_id)
+            return
+
+        # Priority 3: Force handoff — max messages safety net
+        if force_handoff:
+            log.info(
+                "force_handoff_max_messages",
+                session_id=session_id,
+                score=new_score,
+            )
+            HANDOFF_COUNTER.labels(path="chat_force").inc()
             handler = HandoffHandler(session_repo, score_repo)
             await handler.handle(session_id)
 

@@ -50,6 +50,10 @@ class QualificationJudgment:
     missing_info: list[str] = field(default_factory=list)
     recommended_next_question: str = ""
 
+    # Handoff decision (Layer 2 — judge decides if lead is ready for sales)
+    handoff_ready: bool = False
+    handoff_reason: str = ""
+
     # CoT thinking (stored for audit, not used downstream)
     thinking: str = ""
 
@@ -163,6 +167,8 @@ class QualificationJudgment:
             sector_qualifiers=merged_sq,
             missing_info=newer.missing_info or self.missing_info,
             recommended_next_question=newer.recommended_next_question or self.recommended_next_question,
+            handoff_ready=self.handoff_ready or newer.handoff_ready,
+            handoff_reason=newer.handoff_reason or self.handoff_reason,
             thinking=newer.thinking or self.thinking,
             extraction_version=max(self.extraction_version, newer.extraction_version),
             scoring_mode=newer.scoring_mode,
@@ -220,6 +226,8 @@ class QualificationJudgment:
             "sector_qualifiers": self.sector_qualifiers,
             "missing_info": self.missing_info,
             "recommended_next_question": self.recommended_next_question,
+            "handoff_ready": self.handoff_ready,
+            "handoff_reason": self.handoff_reason,
             "scoring_mode": self.scoring_mode,
         }
 
@@ -247,6 +255,8 @@ class QualificationJudgment:
             sector_qualifiers=data.get("sector_qualifiers", {}),
             missing_info=data.get("missing_info", []),
             recommended_next_question=data.get("recommended_next_question", ""),
+            handoff_ready=data.get("handoff_ready", False),
+            handoff_reason=data.get("handoff_reason", ""),
             thinking=data.get("thinking", ""),
             extraction_version=data.get("extraction_version", 0),
             scoring_mode=data.get("scoring_mode", "llm_judge"),
@@ -285,6 +295,8 @@ class QualificationJudgment:
             sector_qualifiers=sq,
             missing_info=list(result.missing_info),
             recommended_next_question=result.recommended_next_question,
+            handoff_ready=getattr(result, "handoff_ready", False),
+            handoff_reason=getattr(result, "handoff_reason", ""),
             thinking=result.thinking,
             extraction_version=extraction_version,
             scoring_mode="llm_judge",

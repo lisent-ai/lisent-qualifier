@@ -58,6 +58,24 @@ Butunsel degerlendirme yap. Bu skor sadece 4 boyutun toplami degil — genel izl
 - Hangi kritik bilgiler hala eksik?
 - Conversation'da sorulmasi gereken en onemli soru nedir?
 
+### Adim 6: Yonlendirme karari (handoff_ready)
+Bu lead'i satis ekibine yonlendirmeli miyiz?
+
+handoff_ready=true yap:
+- 4 CHAMP boyutundan en az 2'si 15+ puan VE holistic_score >= 65
+- Lead acikca gorusme, toplanti veya insan temsilci talep etti
+- Net satin alma niyeti var ("ne zaman baslayabiliriz", "sozlesme", "fiyat teklifi")
+- Lead hayal kirikligi yasiyor, sabırsiz veya ayni soruyu tekrarliyor
+- Kapsam disi soru soruyor (hukuki, teknik detay, sozlesme sartlari)
+- Son 2 degerlendirmede skor degisimi < 5 puan (diminishing returns)
+
+handoff_ready=false yap:
+- Hala kritik bilgi eksikse ve lead konusmaya istekli
+- Lead sadece genel bilgi ariyorsa, somut proje yok
+- Konusma ilerleme kaydiyor, yeni bilgi geliyor her turda
+
+handoff_reason: Neden yonlendirdigin veya neden devam ettigin (1 cumle)
+
 ## Guven Seviyeleri (confidence)
 - 1.0: Musteri acikca belirtti, kesin bilgi
 - 0.7: Dolayli olarak anlasildi, makul cikarsama

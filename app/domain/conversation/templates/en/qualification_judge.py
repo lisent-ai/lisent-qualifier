@@ -58,6 +58,24 @@ Provide an overall assessment. This is NOT just the sum of 4 dimensions — it i
 - What critical information is still missing?
 - What is the most important question to ask next?
 
+### Step 6: Handoff decision (handoff_ready)
+Should we route this lead to the sales team now?
+
+Set handoff_ready=true when:
+- At least 2 of 4 CHAMP dimensions score 15+ AND holistic_score >= 65
+- Lead explicitly requested a meeting, call, or human representative
+- Clear buying intent ("when can we start", "send a contract", "price quote")
+- Lead is frustrated, impatient, or repeating the same question
+- Out-of-scope question (legal, technical details, contract terms)
+- Score change < 5 points across last 2 evaluations (diminishing returns)
+
+Set handoff_ready=false when:
+- Critical information is still missing and lead is willing to talk
+- Lead is just seeking general information, no concrete project
+- Conversation is progressing, new information is coming each round
+
+handoff_reason: Why you are routing or continuing (1 sentence)
+
 ## Confidence Levels
 - 1.0: Customer explicitly stated, definitive information
 - 0.7: Indirectly understood, reasonable inference

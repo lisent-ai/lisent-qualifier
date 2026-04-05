@@ -15,6 +15,7 @@ from app.infrastructure.redis.score_repo import ScoreRepository
 from app.infrastructure.llm.groq_client import stream_chat
 from app.application.scoring.champ_extractor import extract_champ_task
 from app.application.conversation.commands import SendMessageCommand
+from app.domain.scoring.signals.handoff_triggers import check_instant_handoff
 from app.infrastructure.crm.rest_client import (
     fetch_company_kb_documents,
     fetch_company_ai_config,
@@ -69,32 +70,57 @@ class ConversationHandler:
         session.msg_count = msg_count
         await self._session_repo.save(session)
 
-        settings = get_settings()
-        should_extract = (msg_count % settings.champ_extract_every_n_messages == 0)
-
-        # Check max messages before handoff
-        should_force_handoff = False
+        # Fetch company config (needed for Layer 1 language + Layer 3 max_messages)
+        company_config = None
         if session.company_id:
             try:
                 company_config = await fetch_company_ai_config(session.company_id)
-                if company_config:
-                    max_msgs = company_config.get("max_messages_before_handoff", 10)
-                    if msg_count >= max_msgs:
-                        should_force_handoff = True
-                        log.info(
-                            "max_messages_reached",
-                            session_id=cmd.session_id,
-                            msg_count=msg_count,
-                            max_msgs=max_msgs,
-                        )
             except Exception as exc:
-                log.warning("max_msg_check_failed", error=str(exc))
+                log.warning("company_config_fetch_failed", error=str(exc))
+
+        # ── LAYER 1: Instant trigger check ──────────────────────────────
+        language = (company_config or {}).get("primary_language", "tr")
+        instant_handoff, instant_reason = check_instant_handoff(cmd.content, language)
+        if instant_handoff:
+            log.info(
+                "instant_handoff_triggered",
+                session_id=cmd.session_id,
+                msg_count=msg_count,
+                reason=instant_reason,
+            )
+            return {
+                "session_id": cmd.session_id,
+                "msg_count": msg_count,
+                "should_extract_champ": False,
+                "should_instant_handoff": True,
+                "instant_handoff_reason": instant_reason,
+                "stage": str(session.stage),
+            }
+
+        # ── LAYER 2: Periodic extraction (every N messages) ─────────────
+        settings = get_settings()
+        should_extract = (msg_count % settings.champ_extract_every_n_messages == 0)
+
+        # ── LAYER 3: Max messages → force extraction (soft cap) ─────────
+        force_handoff_after = False
+        max_msgs = (company_config or {}).get("max_messages_before_handoff", 10)
+        if msg_count >= max_msgs:
+            if not should_extract:
+                should_extract = True
+            force_handoff_after = True
+            log.info(
+                "max_messages_reached",
+                session_id=cmd.session_id,
+                msg_count=msg_count,
+                max_msgs=max_msgs,
+            )
 
         return {
             "session_id": cmd.session_id,
             "msg_count": msg_count,
             "should_extract_champ": should_extract,
-            "should_force_handoff": should_force_handoff,
+            "should_instant_handoff": False,
+            "force_handoff_after_extract": force_handoff_after,
             "stage": str(session.stage),
         }
 

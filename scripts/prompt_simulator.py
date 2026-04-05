@@ -223,17 +223,47 @@ class GreenAPIClient:
             print(f"  [ERROR] GreenAPI send: {exc}")
             return False
 
-    async def send_split_message(self, chat_id: str, ai_response: str) -> None:
-        """--- separator'ına göre böl, doğal gecikmeyle gönder."""
+    async def send_typing(self, chat_id: str, typing_time: int = 15000) -> None:
+        """Karşı tarafa 'yazıyor...' göster."""
+        try:
+            resp = await self._client.post(
+                self._url("sendTyping"),
+                json={"chatId": chat_id, "typingTime": typing_time},
+            )
+            if resp.status_code == 200:
+                print(f"  [TYPING] → {chat_id}")
+        except Exception:
+            pass
+
+    async def send_split_message(
+        self, chat_id: str, ai_response: str, groq_elapsed: float = 0.0,
+    ) -> None:
+        """--- separator'ına göre böl, insan benzeri yazım gecikmesiyle gönder."""
+        from app.infrastructure.greenapi.client import compute_typing_delay
+
         parts = ai_response.split("---", 1)
         parts = [p.strip() for p in parts if p.strip()]
 
         if len(parts) == 2:
+            # Part 1: Groq süresi düşülerek gecikme
+            delay_p1 = compute_typing_delay(parts[0])
+            remaining = max(0, delay_p1 - groq_elapsed)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
             await self.send_message(chat_id, parts[0])
-            await asyncio.sleep(self.split_delay)
+
+            # Part 2: tam yazım gecikmesi
+            delay_p2 = compute_typing_delay(parts[1])
+            await self.send_typing(chat_id, typing_time=int(min(delay_p2 * 1000, 20000)))
+            await asyncio.sleep(delay_p2)
             await self.send_message(chat_id, parts[1])
         else:
-            await self.send_message(chat_id, ai_response.replace("---", "").strip())
+            text = ai_response.replace("---", "").strip()
+            delay = compute_typing_delay(text)
+            remaining = max(0, delay - groq_elapsed)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            await self.send_message(chat_id, text)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -373,20 +403,25 @@ class PromptSimulator:
 
         messages = [{"role": "system", "content": system_prompt}]
 
+        # Typing indicator + Groq (max süre — mesaj gönderilince otomatik biter)
+        chat_id = f"{phone}@c.us"
+        await self.greenapi.send_typing(chat_id, typing_time=20000)
+
+        t0 = time.time()
         try:
             ai_response = await self.groq.chat(messages)
         except Exception as exc:
             print(f"  [ERROR] Groq greeting hatası: {exc}")
             return
+        groq_elapsed = time.time() - t0
 
         # Assistant yanıtını session'a kaydet
         session.messages.append({"role": "assistant", "content": ai_response})
 
-        print(f"  [AI] �� {phone}: {ai_response[:120]}...")
+        print(f"  [AI] → {phone}: {ai_response[:120]}...")
 
-        # WhatsApp'a gönder
-        chat_id = f"{phone}@c.us"
-        await self.greenapi.send_split_message(chat_id, ai_response)
+        # WhatsApp'a gönder (insan benzeri gecikmeyle)
+        await self.greenapi.send_split_message(chat_id, ai_response, groq_elapsed=groq_elapsed)
         print(f"  [GREETING] İlk mesaj gönderildi. Yanıt bekleniyor...\n")
 
     async def run(self) -> None:
@@ -525,21 +560,25 @@ class PromptSimulator:
             messages = [{"role": "system", "content": system_prompt}]
             messages += session.messages
 
-            # Groq'a gönder
+            # Typing indicator + Groq (max süre — mesaj gönderilince otomatik biter)
+            chat_id = f"{phone}@c.us"
+            await self.greenapi.send_typing(chat_id, typing_time=20000)
+
+            t0 = time.time()
             try:
                 ai_response = await self.groq.chat(messages)
             except Exception as exc:
                 print(f"  [ERROR] Groq hatası: {exc}")
                 continue
+            groq_elapsed = time.time() - t0
 
             # Assistant yanıtını session'a kaydet
             session.messages.append({"role": "assistant", "content": ai_response})
 
             print(f"  [AI] → {phone}: {ai_response[:120]}...")
 
-            # WhatsApp'a gönder (split messaging)
-            chat_id = f"{phone}@c.us"
-            await self.greenapi.send_split_message(chat_id, ai_response)
+            # WhatsApp'a gönder (insan benzeri gecikmeyle)
+            await self.greenapi.send_split_message(chat_id, ai_response, groq_elapsed=groq_elapsed)
 
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────

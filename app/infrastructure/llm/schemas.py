@@ -149,6 +149,10 @@ class QualificationJudgmentResult(BaseModel):
         default_factory=SectorQualifiersResult,
     )
 
+    # Handoff decision (Layer 2 — judge decides if lead is ready for sales)
+    handoff_ready: bool = False
+    handoff_reason: str = ""
+
     # Next question recommendation (replaces gap routing heuristic)
     missing_info: list[str] = Field(default_factory=list)
     recommended_next_question: str = ""
