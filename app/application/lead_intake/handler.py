@@ -1,7 +1,7 @@
 """
 ProcessWebhookLeadHandler:
-  score >= 80 → local LLM reasoning_report → CRM  (fast path)
-  score  < 80 → create Redis session → ready for Groq chat
+  score >= threshold → local LLM reasoning_report → CRM  (fast path)
+  score  < threshold → create Redis session (PENDING) → wait for user to start AI
 """
 import uuid
 import structlog
@@ -13,11 +13,12 @@ from app.domain.lead.enums import (
     LeadSource, ProjectType, BudgetRange, DecisionAuthority, TimelineUrgency,
 )
 from app.domain.scoring.scorer import RuleBasedScorer
-from app.domain.scoring.thresholds import HIGH_THRESHOLD
+from app.domain.scoring.thresholds import HIGH_THRESHOLD, compute_threshold
 from app.domain.conversation.session import ConversationSession, SessionStage
 from app.infrastructure.redis.session_repo import SessionRepository
 from app.infrastructure.redis.score_repo import ScoreRepository
 from app.infrastructure.crm.webhook_client import send_to_crm
+from app.infrastructure.crm.rest_client import fetch_company_ai_config
 from app.infrastructure.llm import local_llm_client
 from app.application.lead_intake.commands import ProcessWebhookLeadCommand
 from app.metrics import (
@@ -38,7 +39,6 @@ def _safe(enum_cls, value, default):
 
 
 def _build_lead(data: dict[str, Any]) -> Lead:
-    # extra_data içindeki tüm alanlara bak, bulamazsa default kullan
     extra = data.get("extra_data", {})
 
     def get(key: str, default: Any = "") -> Any:
@@ -60,7 +60,7 @@ def _build_lead(data: dict[str, Any]) -> Lead:
         timeline_urgency=_safe(TimelineUrgency, get("timeline_urgency"), TimelineUrgency.UNKNOWN),
         budget_amount=get("budget_amount", None),
         notes=get("notes"),
-        raw_payload=data,
+        raw_payload=data.get("raw_payload", data),
     )
 
 
@@ -93,14 +93,33 @@ class ProcessWebhookLeadHandler:
 
         fallback_url: str | None = cmd.fallback_url
 
-        # ── Fast path: score >= 80 ───────────────────────────────────────────
-        if score >= HIGH_THRESHOLD:
-            LEADS_FAST_PATH.inc()
-            return await self._fast_path(lead, score, breakdown, fallback_url=fallback_url)
+        # ── Fetch company AI config ─────────────────────────────────────────
+        company_config = None
+        if cmd.company_id:
+            try:
+                company_config = await fetch_company_ai_config(cmd.company_id)
+            except Exception as exc:
+                log.warning("company_ai_config_fetch_failed_intake", error=str(exc))
 
-        # ── Chat path: score < 80 ────────────────────────────────────────────
+        # ── Dynamic threshold based on project type + budget ─────────────────
+        threshold = compute_threshold(
+            project_type=lead.project_type.value,
+            budget_range=lead.budget_range.value,
+            company_config=company_config,
+        )
+
+        # ── Fast path: score >= threshold ────────────────────────────────────
+        if score >= threshold:
+            LEADS_FAST_PATH.inc()
+            return await self._fast_path(
+                lead, score, breakdown,
+                fallback_url=fallback_url,
+                company_config=company_config,
+            )
+
+        # ── Chat path: score < threshold → PENDING (AI bekler) ──────────────
         LEADS_CHAT_PATH.inc()
-        return await self._chat_path(lead, score, breakdown, fallback_url=fallback_url)
+        return await self._chat_path(lead, score, breakdown, fallback_url=fallback_url, company_id=cmd.company_id)
 
     async def _fast_path(
         self,
@@ -108,6 +127,7 @@ class ProcessWebhookLeadHandler:
         score: int,
         breakdown: dict[str, int],
         fallback_url: str | None = None,
+        company_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         lead_json = lead.to_dict()
 
@@ -115,18 +135,19 @@ class ProcessWebhookLeadHandler:
         reasoning_json: dict[str, Any] | None = None
         try:
             result = await local_llm_client.generate_reasoning_report(
-                lead_json, score, breakdown
+                lead_json, score, breakdown,
+                company_config=company_config,
             )
             reasoning_json = result.model_dump()
         except Exception as exc:
             log.warning("reasoning_report_failed_fast_path", error=str(exc))
 
         handoff = {
+            "raw_payload": lead.raw_payload,
             "lead": lead_json,
             "score": score,
-            "score_breakdown": breakdown,
             "reasoning_report": reasoning_json,
-            "bant": None,
+            "champ": None,
             "session_id": None,
             "path": "fast",
         }
@@ -143,19 +164,23 @@ class ProcessWebhookLeadHandler:
         score: int,
         breakdown: dict[str, int],
         fallback_url: str | None = None,
+        company_id: str = "",
     ) -> dict[str, Any]:
         session_id = str(uuid.uuid4())
         session = ConversationSession(
             session_id=session_id,
             lead_json=lead.to_dict(),
             score=score,
-            stage=SessionStage.CHAT,
+            stage=SessionStage.PENDING,  # AI bekler, kullanıcı başlatır
             fallback_url=fallback_url,
+            company_id=company_id,
         )
         await self._session_repo.save(session)
         await self._score_repo.record(session_id, score)
 
-        log.info("chat_session_created", lead_id=lead.id, session_id=session_id, score=score)
+        log.info("chat_session_created", lead_id=lead.id, session_id=session_id,
+                 score=score, stage="PENDING")
+
         return {
             "status": "chat_path",
             "lead_id": lead.id,

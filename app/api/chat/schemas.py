@@ -9,4 +9,5 @@ class ChatMessageResponse(BaseModel):
     status: str
     session_id: str
     msg_count: int
-    bant_scheduled: bool
+    champ_scheduled: bool = False
+    handoff_triggered: bool = False

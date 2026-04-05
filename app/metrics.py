@@ -33,13 +33,38 @@ CRM_SEND_COUNTER = Counter(
     ["path", "success"],
 )
 
-BANT_EXTRACTIONS = Counter(
-    "bant_extractions_total",
-    "BANT extraction task executions",
+CHAMP_EXTRACTIONS = Counter(
+    "champ_extractions_total",
+    "CHAMP extraction task executions",
     ["success"],
 )
 
 ACTIVE_SESSIONS = Gauge(
     "active_chat_sessions",
     "Currently active chat sessions",
+)
+
+# ── Qualification Judge metrics ──────────────────────────────────────────────
+
+JUDGE_EXTRACTIONS = Counter(
+    "qualification_judge_extractions_total",
+    "Qualification judge executions",
+    ["success", "mode"],
+)
+
+JUDGE_LATENCY = Histogram(
+    "qualification_judge_latency_seconds",
+    "Qualification judge call latency",
+    buckets=[0.5, 1, 2, 3, 5, 10, 15, 30],
+)
+
+JUDGE_SELF_CONSISTENCY = Counter(
+    "qualification_judge_self_consistency_total",
+    "Self-consistency passes triggered (borderline scores)",
+)
+
+SCORING_MODE_COMPARISON = Histogram(
+    "scoring_mode_score_delta",
+    "CHAMP vs Judge score delta (hybrid mode)",
+    buckets=[-30, -20, -10, -5, 0, 5, 10, 20, 30],
 )

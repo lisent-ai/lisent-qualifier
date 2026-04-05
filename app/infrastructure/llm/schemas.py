@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Any, Literal
 
 
 class LLMMessage(BaseModel):
@@ -38,22 +38,132 @@ class LLMResponse(BaseModel):
         return ""
 
 
-# ── BANT extraction response ─────────────────────────────────────────────────
+# ── CHAMP extraction response ────────────────────────────────────────────────
 
-class BANTExtractionResult(BaseModel):
-    budget_score: int = Field(ge=0, le=25)
+class CHAMPExtractionResult(BaseModel):
+    """Challenges, Authority, Money, Prioritization — 0-25 per dimension."""
+    challenges_score: int = Field(ge=0, le=25)
     authority_score: int = Field(ge=0, le=25)
-    need_score: int = Field(ge=0, le=25)
-    timeline_score: int = Field(ge=0, le=25)
-    budget_notes: str = ""
+    money_score: int = Field(ge=0, le=25)
+    prioritization_score: int = Field(ge=0, le=25)
+
+    challenges_notes: str = ""
     authority_notes: str = ""
-    need_notes: str = ""
-    timeline_notes: str = ""
+    money_notes: str = ""
+    prioritization_notes: str = ""
+
+    # Per-dimension confidence (0.0-1.0)
+    challenges_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+    authority_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+    money_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+    prioritization_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+
     confidence: Literal["low", "medium", "high"] = "low"
 
     @property
     def total(self) -> int:
-        return self.budget_score + self.authority_score + self.need_score + self.timeline_score
+        return (
+            self.challenges_score
+            + self.authority_score
+            + self.money_score
+            + self.prioritization_score
+        )
+
+
+class SectorQualifiersResult(BaseModel):
+    """Sector-specific qualifiers extracted alongside CHAMP."""
+    has_land: bool | None = None
+    permit_status: str | None = None
+    has_architect: bool | None = None
+    budget_source: str | None = None
+    competing_bids: bool | None = None
+    project_sqm: int | None = None
+
+
+class MessageAnalysis(BaseModel):
+    """Per-message intent and sentiment — piggybacked on CHAMP extraction."""
+    intent: Literal[
+        "information_seeking",
+        "price_inquiry",
+        "objection",
+        "positive_signal",
+        "off_topic",
+        "greeting",
+        "closing",
+        "meeting_request",
+        "unknown",
+    ] = "unknown"
+    sentiment: Literal["positive", "neutral", "negative", "frustrated"] = "neutral"
+    buying_signals: list[str] = Field(default_factory=list)
+
+
+class CHAMPFullExtractionResult(BaseModel):
+    """Combined extraction: CHAMP scores + sector qualifiers + message analysis."""
+    champ: CHAMPExtractionResult
+    sector_qualifiers: SectorQualifiersResult = Field(
+        default_factory=SectorQualifiersResult
+    )
+    message_analysis: MessageAnalysis = Field(default_factory=MessageAnalysis)
+
+
+# ── Qualification Judge response ──────────────────────────────────────────────
+
+class QualificationJudgmentResult(BaseModel):
+    """LLM Qualification Judge output — CoT first, then structured scores."""
+
+    # Chain-of-thought (LLM writes this FIRST — forces thinking before scoring)
+    thinking: str = Field(
+        default="",
+        description="Step-by-step reasoning about lead quality",
+    )
+
+    # Per-dimension scores (same 0-25 scale as CHAMP for backward compat)
+    challenges_score: int = Field(ge=0, le=25, default=0)
+    challenges_reasoning: str = ""
+    challenges_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+
+    authority_score: int = Field(ge=0, le=25, default=0)
+    authority_reasoning: str = ""
+    authority_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+
+    money_score: int = Field(ge=0, le=25, default=0)
+    money_reasoning: str = ""
+    money_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+
+    prioritization_score: int = Field(ge=0, le=25, default=0)
+    prioritization_reasoning: str = ""
+    prioritization_confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+
+    # Holistic assessment (LLM's overall judgment)
+    holistic_score: int = Field(ge=0, le=100, default=0)
+    holistic_reasoning: str = ""
+    icp_fit_assessment: str = ""
+
+    # Negative signals (replaces rule-based keyword detection)
+    negative_signals: list[str] = Field(default_factory=list)
+    negative_penalty: int = Field(le=0, default=0)
+    negative_reasoning: str = ""
+
+    # Sector qualifiers (replaces separate extraction)
+    sector_qualifiers: SectorQualifiersResult = Field(
+        default_factory=SectorQualifiersResult,
+    )
+
+    # Next question recommendation (replaces gap routing heuristic)
+    missing_info: list[str] = Field(default_factory=list)
+    recommended_next_question: str = ""
+
+    # Overall confidence
+    confidence: Literal["low", "medium", "high"] = "low"
+
+    @property
+    def total(self) -> int:
+        return (
+            self.challenges_score
+            + self.authority_score
+            + self.money_score
+            + self.prioritization_score
+        )
 
 
 # ── Reasoning report response ─────────────────────────────────────────────────
@@ -65,3 +175,22 @@ class ReasoningReportResult(BaseModel):
     recommended_approach: str
     potential_objections: list[str]
     priority: Literal["high", "medium", "low"]
+
+
+# ── Field mapping response ───────────────────────────────────────────────────
+
+class FieldMappingResult(BaseModel):
+    """LLM/heuristic field mapping sonucu — webhook payload'ından extract edilen alanlar."""
+    full_name: str = ""
+    phone: str = ""
+    email: str = ""
+    city: str = ""
+    source: str = ""
+    project_type: str = ""
+    budget_range: str = ""
+    budget_amount: int | None = None
+    decision_authority: str = ""
+    timeline_urgency: str = ""
+    notes: str = ""
+    external_id: str = ""
+    extra_fields: dict[str, Any] = Field(default_factory=dict)

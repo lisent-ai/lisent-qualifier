@@ -73,24 +73,41 @@ async def send_to_crm(
     except Exception as exc:
         log.error("crm_webhook_failed", error=str(exc))
         if session_repo is not None:
-            await session_repo.push_crm_outbox(payload)
+            envelope = {
+                "webhook_url": target_url,
+                "token": settings.crm_webhook_token,
+                "payload": payload,
+            }
+            await session_repo.push_crm_outbox(envelope)
             log.info("crm_outbox_queued")
         return False
 
 
 async def flush_outbox(session_repo, max_items: int = 50) -> int:
     """Flush pending CRM outbox items. Returns number of successfully sent items."""
+    settings = get_settings()
     sent = 0
     for _ in range(max_items):
         item = await session_repo.pop_crm_outbox()
         if item is None:
             break
         try:
-            await _post_to_crm(item)
+            # Support both envelope format (with url/token) and legacy plain payload
+            if "webhook_url" in item and "payload" in item:
+                url = item["webhook_url"]
+                token = item.get("token", settings.crm_webhook_token)
+                payload = item["payload"]
+            else:
+                url = settings.crm_webhook_url
+                token = settings.crm_webhook_token
+                payload = item
+                if not url:
+                    log.warning("crm_outbox_no_url", item_keys=list(item.keys()))
+                    continue
+            await _post_to_url(url, payload, token)
             sent += 1
         except Exception as exc:
             log.error("crm_outbox_flush_failed", error=str(exc))
-            # Re-queue failed item
             await session_repo.push_crm_outbox(item)
             break
     return sent

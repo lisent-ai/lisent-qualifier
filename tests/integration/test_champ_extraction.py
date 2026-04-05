@@ -1,5 +1,5 @@
 """
-Integration test: BANT score triggers handoff when threshold crossed.
+Integration test: CHAMP score triggers handoff when threshold crossed.
 """
 import pytest
 import fakeredis.aioredis
@@ -8,9 +8,8 @@ from unittest.mock import AsyncMock, patch
 from app.infrastructure.redis.session_repo import SessionRepository
 from app.infrastructure.redis.score_repo import ScoreRepository
 from app.domain.conversation.session import ConversationSession, SessionStage, ChatMessage
-from app.application.scoring.bant_extractor import extract_bant_task
-from app.infrastructure.llm.schemas import BANTExtractionResult
-from app.domain.scoring.thresholds import HIGH_THRESHOLD
+from app.application.scoring.champ_extractor import extract_champ_task
+from app.infrastructure.llm.schemas import CHAMPExtractionResult
 
 
 @pytest.fixture
@@ -29,12 +28,12 @@ def score_repo(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_high_bant_score_triggers_handoff(session_repo, score_repo, fake_redis):
-    """When BANT extraction yields score >= HIGH_THRESHOLD, HandoffHandler should be called."""
+async def test_high_champ_score_triggers_handoff(session_repo, score_repo, fake_redis):
+    """When CHAMP extraction yields high composite score, HandoffHandler should be called."""
     session = ConversationSession(
         session_id="sess-handoff",
-        lead_json={"contact": {"name": "Test"}, "project_type": "commercial"},
-        score=50,
+        lead_json={"contact": {"name": "Test"}, "project_type": "commercial", "budget_range": "over_10m"},
+        score=70,
         stage=SessionStage.CHAT,
         messages=[
             ChatMessage(role="user", content="10 milyon bütçem var ve hemen başlamak istiyorum"),
@@ -44,12 +43,12 @@ async def test_high_bant_score_triggers_handoff(session_repo, score_repo, fake_r
     )
     await session_repo.save(session)
 
-    # BANT result that pushes score over threshold
-    high_bant = BANTExtractionResult(
-        budget_score=25, authority_score=25, need_score=20, timeline_score=15,
+    high_champ = CHAMPExtractionResult(
+        challenges_score=22, authority_score=23, money_score=24, prioritization_score=20,
+        challenges_confidence=0.9, authority_confidence=0.9,
+        money_confidence=0.9, prioritization_confidence=0.8,
         confidence="high",
     )
-    assert high_bant.total >= HIGH_THRESHOLD
 
     handoff_called = False
 
@@ -59,33 +58,35 @@ async def test_high_bant_score_triggers_handoff(session_repo, score_repo, fake_r
         return {"status": "handoff_complete"}
 
     with (
-        patch("app.application.scoring.bant_extractor.local_llm_client.extract_bant",
-              new_callable=AsyncMock, return_value=high_bant),
+        patch("app.application.scoring.champ_extractor.local_llm_client.extract_champ",
+              new_callable=AsyncMock, return_value=high_champ),
         patch("app.infrastructure.redis.client.get_redis", return_value=fake_redis),
         patch(
             "app.application.qualification.handler.HandoffHandler.handle",
             side_effect=fake_handoff,
         ),
     ):
-        await extract_bant_task("sess-handoff", session_repo, score_repo)
+        await extract_champ_task("sess-handoff", session_repo, score_repo)
 
     assert handoff_called
 
 
 @pytest.mark.asyncio
-async def test_low_bant_score_does_not_trigger_handoff(session_repo, score_repo, fake_redis):
-    """Low BANT score should update score but NOT trigger handoff."""
+async def test_low_champ_score_does_not_trigger_handoff(session_repo, score_repo, fake_redis):
+    """Low CHAMP score should update score but NOT trigger handoff."""
     session = ConversationSession(
         session_id="sess-low",
-        lead_json={"contact": {"name": "Test"}},
+        lead_json={"contact": {"name": "Test"}, "project_type": "other"},
         score=30,
         stage=SessionStage.CHAT,
         messages=[ChatMessage(role="user", content="Belki ileride düşünürüz")],
     )
     await session_repo.save(session)
 
-    low_bant = BANTExtractionResult(
-        budget_score=5, authority_score=5, need_score=5, timeline_score=5,
+    low_champ = CHAMPExtractionResult(
+        challenges_score=5, authority_score=5, money_score=5, prioritization_score=5,
+        challenges_confidence=0.2, authority_confidence=0.2,
+        money_confidence=0.2, prioritization_confidence=0.2,
         confidence="low",
     )
 
@@ -96,14 +97,15 @@ async def test_low_bant_score_does_not_trigger_handoff(session_repo, score_repo,
         handoff_called = True
 
     with (
-        patch("app.application.scoring.bant_extractor.local_llm_client.extract_bant",
-              new_callable=AsyncMock, return_value=low_bant),
+        patch("app.application.scoring.champ_extractor.local_llm_client.extract_champ",
+              new_callable=AsyncMock, return_value=low_champ),
         patch("app.infrastructure.redis.client.get_redis", return_value=fake_redis),
         patch("app.application.qualification.handler.HandoffHandler.handle",
               side_effect=fake_handoff),
     ):
-        await extract_bant_task("sess-low", session_repo, score_repo)
+        await extract_champ_task("sess-low", session_repo, score_repo)
 
     assert not handoff_called
     updated = await session_repo.get("sess-low")
-    assert updated.score == 30  # max(30, 5+5+5+5=20) → stays 30
+    # Score should be at least the old score (monotonic)
+    assert updated.score >= 30

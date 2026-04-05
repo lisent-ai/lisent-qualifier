@@ -1,26 +1,48 @@
-from fastapi import APIRouter, status
+import uuid
+
+from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
-from app.api.webhook.schemas import WebhookLeadPayload
 from app.api.deps import get_lead_intake_handler, SessionRepoDep, ScoreRepoDep
 from app.application.lead_intake.commands import ProcessWebhookLeadCommand
-from app.infrastructure.crm.rest_client import lookup_company_by_qualifier_token
+from app.infrastructure.crm.rest_client import (
+    lookup_company_by_qualifier_token,
+    lookup_company_by_rag_token,
+    store_webhook_data,
+)
 from app.infrastructure.db.pool import get_db_pool
-from app.infrastructure.db.lead_repo import upsert_lead
+from app.infrastructure.db.lead_repo import upsert_lead, check_phone_duplicate
+from app.infrastructure.llm.field_mapper import map_fields
 import structlog
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/webhook", tags=["webhook"])
 
+_MAX_BODY_SIZE = 64 * 1024  # 64 KB
+
 
 @router.post("/lead/{company_token}", status_code=status.HTTP_202_ACCEPTED)
 async def receive_lead(
     company_token: str,
-    payload: WebhookLeadPayload,
+    request: Request,
     session_repo: SessionRepoDep,
     score_repo: ScoreRepoDep,
 ) -> dict:
-    # Token → company_id + fallback_url
+    # ── Body size check + JSON parse ────────────────────────────────────────
+    body = await request.body()
+    if len(body) > _MAX_BODY_SIZE:
+        return JSONResponse({"error": "payload too large"}, status_code=413)
+
+    import json as _json
+    try:
+        raw_payload: dict = _json.loads(body)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    if not isinstance(raw_payload, dict):
+        return JSONResponse({"error": "payload must be a JSON object"}, status_code=400)
+
+    # ── Token → company_id + fallback_url ─────────────���─────────────────────
     company_info = await lookup_company_by_qualifier_token(company_token)
     if not company_info:
         log.warning("qualifier_token_invalid", token=company_token[-8:])
@@ -29,30 +51,144 @@ async def receive_lead(
     company_id = str(company_info["company_id"])
     fallback_url: str | None = company_info.get("fallback_url")
 
-    extra = payload.extra_data()
+    # ── Field mapping (heuristic + LLM fallback) ───────────────────────────
+    mapping = await map_fields(raw_payload)
 
-    # Mevcut AI akışını çalıştır
+    # ── lead_id: external_id > payload lead_id > auto UUID ──────────────────
+    lead_id = mapping.external_id or raw_payload.get("lead_id") or str(uuid.uuid4())
+
+    # ── Build lead_data for handler ─────────��─────────────────────���─────────
+    lead_data = {
+        "name": mapping.full_name,
+        "phone": mapping.phone,
+        "email": mapping.email,
+        "city": mapping.city,
+        "source": mapping.source,
+        "project_type": mapping.project_type,
+        "budget_range": mapping.budget_range,
+        "budget_amount": mapping.budget_amount,
+        "decision_authority": mapping.decision_authority,
+        "timeline_urgency": mapping.timeline_urgency,
+        "notes": mapping.notes,
+        "lead_id": lead_id,
+        "extra_data": mapping.extra_fields,
+        "raw_payload": raw_payload,
+    }
+
+    # ── AI akışını çalıştır ─────────────────────────────────────────────────
     handler = get_lead_intake_handler(session_repo, score_repo)
     cmd = ProcessWebhookLeadCommand(
-        lead_data={"name": payload.name, "phone": payload.phone, "lead_id": payload.lead_id, "extra_data": extra},
+        lead_data=lead_data,
         fallback_url=fallback_url,
+        company_id=company_id,
     )
     result = await handler.handle(cmd)
 
-    # PostgreSQL'e kaydet
+    # ── Phone-based duplicate check ──���──────────────────────────────────────
+    duplicate_of: str | None = None
+    if mapping.phone:
+        try:
+            pool = get_db_pool()
+            existing = await check_phone_duplicate(
+                pool, company_id=company_id, phone=mapping.phone,
+            )
+            if existing and existing["lead_id"] != lead_id:
+                duplicate_of = existing["id"]
+                log.info("duplicate_lead_detected",
+                         lead_id=lead_id, duplicate_of=duplicate_of,
+                         existing_name=existing.get("name"))
+        except Exception as exc:
+            log.warning("phone_duplicate_check_failed", error=str(exc))
+
+    # ── PostgreSQL'e kaydet ────────────────────────────────────────────────
+    result_status = result.get("status", "chat_path")
+    path = result_status.replace("_path", "")
+    # Fast path → lead direkt qualified, chat path → new (AI bekliyor)
+    lead_status = "qualified" if result_status == "fast_path" else "new"
+
     try:
         pool = get_db_pool()
-        await upsert_lead(
+        db_id = await upsert_lead(
             pool,
             company_id=company_id,
-            lead_id=payload.lead_id,
-            phone=payload.phone,
-            name=payload.name,
+            lead_id=lead_id,
+            phone=mapping.phone,
+            name=mapping.full_name,
+            email=mapping.email,
+            city=mapping.city,
+            source=mapping.source,
+            project_type=mapping.project_type,
             score=result.get("score", 0),
-            path=result.get("status", "chat").replace("_path", ""),
-            extra_data=extra,
+            path=path,
+            extra_data=mapping.extra_fields,
+            score_breakdown=result.get("score_breakdown"),
+            raw_payload=raw_payload,
+            duplicate_of=duplicate_of,
         )
+
+        # Fast path → status direkt qualified olarak güncelle
+        if lead_status == "qualified" and db_id:
+            await pool.execute(
+                "UPDATE qualifier_leads SET status='qualified', updated_at=now() WHERE id=$1::uuid",
+                db_id,
+            )
+
+        # Chat path ise qualifier_sessions tablosuna da yaz
+        session_id = result.get("session_id")
+        if session_id and db_id:
+            await _upsert_session(pool, db_id, company_id, session_id, result.get("score", 0))
+
     except Exception as exc:
-        log.error("qualifier_db_write_failed", error=str(exc), lead_id=payload.lead_id)
+        log.error("qualifier_db_write_failed", error=str(exc), lead_id=lead_id)
 
     return result
+
+
+@router.post("/rag/{token}", status_code=status.HTTP_202_ACCEPTED)
+async def receive_rag_data(token: str, request: Request) -> dict:
+    """Accept any JSON payload and store it as RAG knowledge for the company."""
+    body = await request.body()
+    if len(body) > _MAX_BODY_SIZE:
+        return JSONResponse({"error": "payload too large"}, status_code=413)
+
+    import json as _json
+    try:
+        payload = _json.loads(body)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    # Token → company_id
+    company_info = await lookup_company_by_rag_token(token)
+    if not company_info:
+        log.warning("rag_token_invalid", token=token[-8:])
+        return JSONResponse({"error": "invalid token"}, status_code=401)
+
+    company_id = str(company_info["company_id"])
+
+    # Store in CRM
+    try:
+        result = await store_webhook_data(company_id, payload)
+        log.info("rag_webhook_stored", company_id=company_id, data_id=result.get("id") if result else None)
+    except Exception as exc:
+        log.error("rag_webhook_store_failed", error=str(exc), company_id=company_id)
+        return JSONResponse({"error": "failed to store data"}, status_code=502)
+
+    return {"status": "accepted", "company_id": company_id}
+
+
+async def _upsert_session(
+    pool, lead_db_id: str, company_id: str, session_id: str, score: int,
+) -> None:
+    """Chat path lead'inin session'ını qualifier_sessions tablosuna yaz."""
+    import json as _j
+    try:
+        await pool.execute(
+            """
+            INSERT INTO qualifier_sessions (id, lead_id, company_id, score, stage, messages)
+            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'PENDING', '[]'::jsonb)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            session_id, lead_db_id, company_id, score,
+        )
+    except Exception as exc:
+        log.warning("session_db_write_failed", error=str(exc), session_id=session_id)

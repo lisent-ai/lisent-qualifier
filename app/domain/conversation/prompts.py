@@ -1,127 +1,333 @@
-"""Pure string builders for system prompts. No I/O."""
+"""
+Generic prompt builders — delegates to language/sector-specific templates.
+
+All functions are pure string builders. No I/O.
+"""
 import json
 from typing import Any
 
+from app.domain.conversation.templates.registry import TemplateRegistry
+
+
+# ── Gap-aware CHAMP routing ──────────────────────────────────────────────────
+
+_GAP_HINTS = {
+    "tr": {
+        "all_missing": "Tüm CHAMP boyutları eksik. Öncelik: Challenges (ne inşa etmek istiyorlar?)",
+        "challenges": "Ne tür bir proje düşünüyor? Detayları sor.",
+        "authority": "Karar verici kim? Kiminle birlikte karar veriyorlar?",
+        "money": "Bütçesi hakkında bilgi al.",
+        "prioritization": "Ne zaman başlamak istiyor? Aciliyet durumunu sor.",
+        "prefix": "En büyük eksik boyut: {dim} (skor: {score}/25). {hint}",
+    },
+    "en": {
+        "all_missing": "All CHAMP dimensions are missing. Priority: Challenges (what do they want to build?)",
+        "challenges": "What type of project are they considering? Ask for details.",
+        "authority": "Who is the decision maker? Who else is involved?",
+        "money": "Get information about their budget.",
+        "prioritization": "When do they want to start? Ask about urgency.",
+        "prefix": "Biggest gap: {dim} (score: {score}/25). {hint}",
+    },
+}
+
+
+# ── Tone instruction maps ───────────────────────────────────────────────────
+
+_TONE_MAP_TR = {
+    "professional": "Profesyonel, resmi ve güvenilir bir dil kullan.",
+    "casual": "Sıcak, samimi ve rahat bir sohbet tonu kullan.",
+    "technical": "Sektöre özgü teknik terimler ve profesyonel jargon kullan.",
+    "luxury": "Premium, sofistike ve özel bir dil kullan. Müşteriye ayrıcalıklı hissettir.",
+}
+
+_TONE_MAP_EN = {
+    "professional": "Use a professional, formal and trustworthy tone.",
+    "casual": "Use a warm, friendly and relaxed conversational tone.",
+    "technical": "Use industry-specific technical terms and professional jargon.",
+    "luxury": "Use premium, sophisticated language. Make the client feel exclusive.",
+}
+
+
+def _compute_champ_gaps(champ_json: dict[str, Any] | None, language: str = "tr") -> str:
+    # If judge provided a recommended next question, use it directly
+    if champ_json and champ_json.get("recommended_next_question"):
+        return champ_json["recommended_next_question"]
+
+    hints = _GAP_HINTS.get(language, _GAP_HINTS["en"])
+
+    if not champ_json:
+        return hints["all_missing"]
+
+    gaps = {
+        "challenges": champ_json.get("challenges_score", 0),
+        "authority": champ_json.get("authority_score", 0),
+        "money": champ_json.get("money_score", 0),
+        "prioritization": champ_json.get("prioritization_score", 0),
+    }
+
+    # Find the dimension with the lowest score
+    biggest_gap_dim = min(gaps, key=gaps.get)  # type: ignore[arg-type]
+    biggest_gap_score = gaps[biggest_gap_dim]
+
+    hint = hints.get(biggest_gap_dim, "")
+    return hints["prefix"].format(dim=biggest_gap_dim, score=biggest_gap_score, hint=hint)
+
+
+# ── Chat system prompt ───────────────────────────────────────────────────────
 
 def build_chat_system_prompt(
     lead_json: dict[str, Any],
-    bant_json: dict[str, Any] | None = None,
+    champ_json: dict[str, Any] | None = None,
+    company_config: dict[str, Any] | None = None,
 ) -> str:
+    cfg = company_config or {}
+    language = cfg.get("primary_language") or "tr"
+    sector = cfg.get("industry_focus") or "construction"
+
+    # Tone instruction
+    tone = cfg.get("tone") or "professional"
+    tone_map = _TONE_MAP_TR if language == "tr" else _TONE_MAP_EN
+    tone_instruction = tone_map.get(tone, tone_map["professional"])
+
+    # Working hours
+    working_hours = cfg.get("working_hours") or ""
+    working_hours_section = ""
+    if working_hours:
+        if language == "tr":
+            working_hours_section = (
+                f"\n[ÇALIŞMA SAATLERİ]\nŞirket çalışma saatleri: {working_hours}."
+                " Müşteri randevu veya görüşme zamanı sorarsa bu saatleri referans al.\n"
+            )
+        else:
+            working_hours_section = (
+                f"\n[WORKING HOURS]\nCompany working hours: {working_hours}."
+                " Reference these hours when the customer asks about availability"
+                " or meeting times.\n"
+            )
+
+    # Pricing hints
+    pricing_hints = cfg.get("pricing_hints") or ""
+    pricing_hints_section = ""
+    if pricing_hints:
+        if language == "tr":
+            pricing_hints_section = f"\n[FİYAT İPUÇLARI - SADECE REFERANS]\n{pricing_hints}\nBu bilgiyi müşteriye doğrudan paylaşma, sadece sohbeti yönlendirmek için kullan.\n"
+        else:
+            pricing_hints_section = f"\n[PRICING HINTS - REFERENCE ONLY]\n{pricing_hints}\nDo not share this directly with the customer, use it only to guide the conversation.\n"
+
+    # KB documents content
+    kb_content = cfg.get("kb_documents_content") or ""
+    kb_section = ""
+    if kb_content:
+        if language == "tr":
+            kb_section = f"\n[ŞİRKET BİLGİ BANKASI - DÖKÜMANLAR]\n{kb_content}\n"
+        else:
+            kb_section = f"\n[COMPANY KNOWLEDGE BASE - DOCUMENTS]\n{kb_content}\n"
+
+    templates = TemplateRegistry.get_templates(language, sector)
+
     lead_context = json.dumps(lead_json, ensure_ascii=False, indent=2)
-    bant_section = ""
-    if bant_json:
-        bant_context = json.dumps(bant_json, ensure_ascii=False, indent=2)
-        bant_section = f"""
 
-Current CHAMP Analysis (JSON):
-{bant_context}
-"""
+    champ_section = ""
+    if champ_json:
+        champ_context = json.dumps(champ_json, ensure_ascii=False, indent=2)
+        champ_section = f"\n\nCurrent CHAMP Analysis (JSON):\n{champ_context}\n"
+        # Inject holistic reasoning from judge (if available)
+        if champ_json.get("holistic_reasoning"):
+            champ_section += f"\nQualification Analysis: {champ_json['holistic_reasoning']}\n"
+        if champ_json.get("icp_fit_assessment"):
+            champ_section += f"ICP Fit: {champ_json['icp_fit_assessment']}\n"
 
-    return f"""You are a Senior Investment and Project Advisor with 10 years of expertise in the construction and premium real estate sector. You are NOT a standard AI assistant or a robot. You are a highly skilled, emotionally intelligent human sales professional chatting with a potential client on WhatsApp.
+    # Company customization
+    company_name = cfg.get("company_display_name") or ""
+    industry = cfg.get("industry_focus") or "construction and premium real estate"
+    persona = cfg.get("custom_persona") or "Senior Investment and Project Advisor with 10 years of expertise"
+    company_context = f" representing {company_name}" if company_name else ""
 
-Your primary goal is to naturally qualify the lead by gathering the missing CHAMP criteria (Challenges/Needs, Authority, Money/Budget, Prioritization/Timeline) without sounding like you are interrogating them.
+    # Forbidden topics
+    forbidden = cfg.get("forbidden_topics") or []
+    forbidden_section = ""
+    if forbidden:
+        forbidden_items = "\n".join(f"- {t}" for t in forbidden)
+        forbidden_section = f"\n[ADDITIONAL FORBIDDEN TOPICS]\n{forbidden_items}\n"
 
-[COMMUNICATION STYLE & WHATSAPP RULES]
-- This is a WhatsApp conversation. People expect short, natural, and conversational messages.
-- STRICT LIMIT: Never write more than 3 short sentences per message.
-- STRICT FORMAT: ABSOLUTELY NO bullet points, numbered lists, or long paragraphs. Be conversational.
-- Match the user's energy. If they are brief, be professional and concise. If they use humor, respond with subtle wit but immediately pivot back to the sales objective.
-- Use emojis very sparingly and only when appropriate (e.g., 👍, 🙏).
+    # FAQ
+    faq = cfg.get("faq_entries") or []
+    faq_section = ""
+    if faq:
+        faq_items = "\n".join(
+            f"Q: {f.get('question', '')} A: {f.get('answer', '')}"
+            for f in faq
+            if isinstance(f, dict)
+        )
+        if faq_items:
+            faq_section = f"\n[COMPANY KNOWLEDGE BASE]\n{faq_items}\n"
 
-[LANGUAGE ADAPTATION & FILLER WORDS]
-- Always communicate in the primary language the user is speaking.
-- CRITICAL FILLER WORD RULE: If the user is speaking a primary language but occasionally drops foreign filler words, slang, or short affirmations (e.g., "okay", "yes", "alright", "super", "tamam"), DO NOT switch your language. Maintain the primary language of the conversation.
-- Only switch your language if the user completely and consistently changes the language of their sentences.
+    # Custom qualifying questions
+    custom_qs = cfg.get("custom_qualifying_questions") or []
+    custom_qs_section = ""
+    if custom_qs:
+        qs_items = "\n".join(f"- {q}" for q in custom_qs)
+        custom_qs_section = f"\n[PRIORITY QUALIFYING QUESTIONS]\n{qs_items}\n"
 
-[RED LINES & RESTRICTIONS]
-- PRICING: NEVER provide estimated costs, exact prices, or price ranges under any circumstances. If the user asks for a price, politely explain that construction/project costs depend heavily on the land conditions, architectural details, and material choices. Then, smoothly pivot the conversation by asking about their allocated budget.
-- COMPETITION: Never speak negatively about competitors. Focus solely on your company's premium quality, speed, and reliability.
+    # Gap-aware instruction
+    champ_gap_instruction = _compute_champ_gaps(champ_json, language)
 
-[OFF-TOPIC BEHAVIOR - THE 3 STRIKES RULE]
-If the user attempts to discuss non-business topics (politics, sports, coding, casual dating, etc.), apply the 3 Strikes Rule strictly:
-- Strike 1 (Deflect with Humor): Respond with a very short, witty remark acknowledging their comment, then IMMEDIATELY ask a project-related question.
-- Strike 2 (Professional Boundary): If they persist, politely set a boundary. Example: "I enjoy a good chat, but my expertise is strictly in construction and investments. Shall we continue discussing your project?"
-- Strike 3 (Terminate): If they refuse to focus, end the conversation politely. Example: "It seems this might not be the right time to discuss a construction project. I will be here when you are ready to move forward. Have a great day!"
-
-[YOUR CURRENT TASK]
-Review the "Current Lead Data (JSON)" below. Identify which CHAMP fields are missing.
-Ask EXACTLY ONE natural, conversational question to uncover ONE missing piece of information. DO NOT ask multiple questions in a single message. Keep the conversation flowing smoothly.
-
-Current Lead Data (JSON):
-{lead_context}
-{bant_section}"""
-
-
-def build_handoff_closing_prompt() -> str:
-    return """Müşteri artık satış ekibimizle görüşmeye hazır.
-Sohbeti nazikçe kapat. Bir uzmanın kendisini arayacağını ve randevu alabileceklerini söyle.
-Teşekkür et ve olumlu bir kapanış yap. Maksimum 2-3 cümle."""
+    return templates.chat_system.format(
+        persona=persona,
+        company_context=company_context,
+        industry=industry,
+        lead_context=lead_context,
+        champ_section=champ_section,
+        champ_gap_instruction=champ_gap_instruction,
+        forbidden_section=forbidden_section,
+        faq_section=faq_section,
+        custom_qs_section=custom_qs_section,
+        tone_instruction=tone_instruction,
+        working_hours_section=working_hours_section,
+        pricing_hints_section=pricing_hints_section,
+        kb_section=kb_section,
+    )
 
 
-def build_bant_extraction_prompt(conversation_history: str) -> str:
-    return f"""Aşağıdaki inşaat müşterisi sohbet geçmişini analiz et ve BANT parametrelerini JSON olarak çıkar.
+# ── Handoff closing prompt ───────────────────────────────────────────────────
 
-## Sohbet Geçmişi
-{conversation_history}
+def build_handoff_closing_prompt(company_config: dict[str, Any] | None = None) -> str:
+    cfg = company_config or {}
+    language = cfg.get("primary_language") or "tr"
+    sector = cfg.get("industry_focus") or "construction"
 
-## Görev
-Sohbetten elde edilen bilgilere göre BANT skorunu hesapla. Her kategori 0-25 puan arasında.
+    templates = TemplateRegistry.get_templates(language, sector)
+    return templates.closing
 
-Puan kriterleri:
-- budget_score: Bütçe netliği ve büyüklüğü (25: net yüksek bütçe, 0: belirsiz/düşük)
-- authority_score: Karar verme yetkisi (25: tek karar verici, 0: bilgi yok)
-- need_score: İhtiyaç netliği ve aciliyeti (25: net ihtiyaç + somut gereksinim, 0: belirsiz)
-- timeline_score: Zaman çizelgesi aciliyeti (25: < 1 ay, 0: belirsiz)
 
-Yanıtını SADECE aşağıdaki JSON formatında ver, başka hiçbir şey yazma:
-{{
-  "budget_score": <0-25>,
-  "authority_score": <0-25>,
-  "need_score": <0-25>,
-  "timeline_score": <0-25>,
-  "budget_notes": "<bütçeyle ilgili bulgular>",
-  "authority_notes": "<yetki durumu>",
-  "need_notes": "<ihtiyaç ve gereksinimler>",
-  "timeline_notes": "<zaman çizelgesi>",
-  "confidence": "<low|medium|high>"
-}}"""
+# ── CHAMP extraction prompt ──────────────────────────────────────────────────
 
+def build_champ_extraction_prompt(
+    conversation_history: str,
+    current_champ_json: dict[str, Any] | None = None,
+    company_config: dict[str, Any] | None = None,
+) -> str:
+    cfg = company_config or {}
+    language = cfg.get("primary_language") or "tr"
+    sector = cfg.get("industry_focus") or "construction"
+
+    from app.domain.conversation.few_shots.registry import FewShotRegistry
+
+    templates = TemplateRegistry.get_templates(language, sector)
+    few_shots = FewShotRegistry.get_examples(language, sector)
+
+    current_section = ""
+    if current_champ_json:
+        current_section = (
+            f"## Current CHAMP State\n"
+            f"```json\n{json.dumps(current_champ_json, ensure_ascii=False, indent=2)}\n```\n"
+        )
+
+    prompt = templates.extraction.format(
+        conversation_history=conversation_history,
+        current_champ_section=current_section,
+        sector_qualifiers_instruction=templates.extraction_sector_instruction,
+    )
+
+    if few_shots:
+        prompt = few_shots + "\n\n" + prompt
+
+    return prompt
+
+
+# ── Qualification judge prompt ────────────────────────────────────────────────
+
+def build_qualification_judge_prompt(
+    conversation_history: str,
+    lead_json: dict[str, Any],
+    current_judgment_json: dict[str, Any] | None = None,
+    company_config: dict[str, Any] | None = None,
+) -> str:
+    """Build the qualification judge system prompt with ICP, few-shots, current state."""
+    cfg = company_config or {}
+    language = cfg.get("primary_language") or "tr"
+    sector = cfg.get("industry_focus") or "construction"
+
+    from app.domain.conversation.few_shots.registry import FewShotRegistry
+
+    templates = TemplateRegistry.get_templates(language, sector)
+    if not templates.qualification_judge:
+        raise ValueError(f"No qualification judge template for language={language}, sector={sector}")
+
+    few_shots = FewShotRegistry.get_judge_examples(language, sector)
+
+    # ICP: company-defined or default
+    if language in ("tr", "turkish"):
+        from app.domain.conversation.templates.tr.qualification_judge import DEFAULT_ICP_TR
+        default_icp = DEFAULT_ICP_TR
+    else:
+        from app.domain.conversation.templates.en.qualification_judge import DEFAULT_ICP_EN
+        default_icp = DEFAULT_ICP_EN
+
+    icp = cfg.get("ideal_customer_profile") or default_icp
+
+    # Company context
+    company_name = cfg.get("company_display_name") or ""
+    industry = cfg.get("industry_focus") or "construction"
+    company_context = f"{company_name} — {industry}" if company_name else industry
+
+    # Current judgment state
+    current_section = ""
+    if current_judgment_json:
+        current_section = (
+            "## Mevcut Degerlendirme\n"
+            f"```json\n{json.dumps(current_judgment_json, ensure_ascii=False, indent=2)}\n```\n"
+            "SADECE yeni bilgi eklenen boyutlari guncelle. "
+            "Degismeyen boyutlari mevcut skorlarinda birak.\n"
+        ) if language in ("tr", "turkish") else (
+            "## Current Assessment\n"
+            f"```json\n{json.dumps(current_judgment_json, ensure_ascii=False, indent=2)}\n```\n"
+            "Only update dimensions where new information was provided. "
+            "Keep unchanged dimensions at their current scores.\n"
+        )
+
+    # Few-shot section
+    few_shot_section = f"\n{few_shots}" if few_shots else ""
+
+    lead_context = json.dumps(lead_json, ensure_ascii=False, indent=2)
+
+    return templates.qualification_judge.format(
+        sector=industry,
+        ideal_customer_profile=icp,
+        company_context=company_context,
+        lead_json=lead_context,
+        conversation_history=conversation_history,
+        current_judgment_section=current_section,
+        few_shot_section=few_shot_section,
+    )
+
+
+# ── Reasoning report prompt ──────────────────────────────────────────────────
 
 def build_reasoning_report_prompt(
     lead_json: dict[str, Any],
     score: int,
     score_breakdown: dict[str, int],
-    bant_json: dict[str, Any] | None = None,
+    champ_json: dict[str, Any] | None = None,
+    company_config: dict[str, Any] | None = None,
 ) -> str:
+    cfg = company_config or {}
+    language = cfg.get("primary_language") or "tr"
+    sector = cfg.get("industry_focus") or "construction"
+
+    templates = TemplateRegistry.get_templates(language, sector)
+
     lead_context = json.dumps(lead_json, ensure_ascii=False, indent=2)
     breakdown_context = json.dumps(score_breakdown, ensure_ascii=False, indent=2)
-    bant_section = ""
-    if bant_json:
-        bant_section = f"\n## BANT Analizi\n```json\n{json.dumps(bant_json, ensure_ascii=False, indent=2)}\n```"
 
-    return f"""Sen bir inşaat sektörü satış analisti olarak çalışıyorsun.
-Aşağıdaki müşteri adayını analiz et ve satış ekibine kapsamlı bir brifing raporu hazırla.
+    champ_section = ""
+    if champ_json:
+        champ_section = f"\n## CHAMP Analysis\n```json\n{json.dumps(champ_json, ensure_ascii=False, indent=2)}\n```"
 
-## Müşteri Verisi
-```json
-{lead_context}
-```
-
-## Puan Dağılımı (Toplam: {score}/100)
-```json
-{breakdown_context}
-```
-{bant_section}
-
-## Görev
-Satış ekibinin telefon görüşmesi öncesinde okuyacağı, Türkçe, kısa ve eyleme dönük bir brifing raporu yaz.
-
-Yanıtını SADECE aşağıdaki JSON formatında ver:
-{{
-  "summary": "<1-2 cümle müşteri özeti>",
-  "score_explanation": "<neden bu puanı aldı>",
-  "key_signals": ["<sinyal 1>", "<sinyal 2>", "<sinyal 3>"],
-  "recommended_approach": "<telefonda nasıl yaklaşılmalı>",
-  "potential_objections": ["<itiraz 1>", "<itiraz 2>"],
-  "priority": "<high|medium|low>"
-}}"""
+    return templates.reasoning.format(
+        industry=sector,
+        lead_context=lead_context,
+        score=score,
+        breakdown_context=breakdown_context,
+        champ_section=champ_section,
+    )
