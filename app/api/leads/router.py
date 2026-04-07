@@ -1,7 +1,7 @@
 import csv
 import io
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -86,31 +86,15 @@ class BulkRequest(BaseModel):
 @router.post("/leads/{company_id}/bulk")
 async def bulk_action(
     company_id: str, body: BulkRequest,
-    background_tasks: BackgroundTasks,
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ) -> dict:
     _check_key(x_api_key)
     pool = get_db_pool()
     if body.action == "status_change":
-        result = await bulk_update_status(
+        return await bulk_update_status(
             pool, company_id=company_id, lead_ids=body.lead_ids,
             new_status=body.params.get("status", ""), actor=body.params.get("actor", "dashboard"),
         )
-        # Trigger handoff for each lead when bulk-qualified
-        if body.params.get("status") == "qualified":
-            from app.infrastructure.redis.client import get_redis
-            from app.infrastructure.redis.session_repo import SessionRepository
-            from app.infrastructure.redis.score_repo import ScoreRepository
-            from app.application.qualification.handler import HandoffHandler
-            session_repo = SessionRepository(get_redis())
-            score_repo = ScoreRepository(get_redis())
-            handler = HandoffHandler(session_repo, score_repo)
-            for lid in body.lead_ids:
-                lead = await get_lead_with_session(pool, company_id=company_id, lead_db_id=lid)
-                sid = lead.get("session_id") if lead else None
-                if sid:
-                    background_tasks.add_task(handler.handle, sid)
-        return result
     elif body.action == "assign":
         return await bulk_assign(
             pool, company_id=company_id, lead_ids=body.lead_ids,
@@ -143,11 +127,12 @@ async def export_leads(
     writer.writerow(["id", "lead_id", "name", "phone", "score", "path", "status", "assigned_to",
                      "source", "project_type", "budget_range", "city", "email", "created_at"])
     for lead in leads:
+        ex = lead.get("extra_data") or {}
         writer.writerow([
             lead["id"], lead["lead_id"], lead["name"], lead["phone"],
             lead["score"], lead["path"], lead["status"], lead.get("assigned_to", ""),
-            lead.get("source", ""), lead.get("project_type", ""), lead.get("budget_range", ""),
-            lead.get("city", ""), lead.get("email", ""), lead["created_at"],
+            ex.get("source", ""), ex.get("project_type", ""), ex.get("budget_range", ""),
+            ex.get("city", ""), ex.get("email", ""), lead["created_at"],
         ])
     output.seek(0)
     return StreamingResponse(
@@ -238,7 +223,6 @@ async def change_lead_status(
     company_id: str,
     lead_id: str,
     body: StatusUpdateRequest,
-    background_tasks: BackgroundTasks,
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
 ) -> dict:
     _check_key(x_api_key)
@@ -248,21 +232,6 @@ async def change_lead_status(
             pool, company_id=company_id, lead_db_id=lead_id,
             new_status=body.status, actor=body.actor, reason=body.reason,
         )
-
-        # Trigger handoff when status changes to "qualified"
-        if body.status == "qualified":
-            lead = await get_lead_with_session(pool, company_id=company_id, lead_db_id=lead_id)
-            session_id = lead.get("session_id") if lead else None
-            if session_id:
-                from app.infrastructure.redis.client import get_redis
-                from app.infrastructure.redis.session_repo import SessionRepository
-                from app.infrastructure.redis.score_repo import ScoreRepository
-                from app.application.qualification.handler import HandoffHandler
-                session_repo = SessionRepository(get_redis())
-                score_repo = ScoreRepository(get_redis())
-                handler = HandoffHandler(session_repo, score_repo)
-                background_tasks.add_task(handler.handle, session_id)
-
         return {"ok": True, **result}
     except ValueError as exc:
         msg = str(exc)

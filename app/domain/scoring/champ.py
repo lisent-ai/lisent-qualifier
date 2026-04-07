@@ -74,22 +74,16 @@ class CHAMPScore:
 
     def merge_monotonic(self, newer: "CHAMPScore") -> "CHAMPScore":
         """
-        Merge a newer extraction with confidence-gated decrease.
-
-        - If newer confidence is HIGHER → accept new score (even if lower).
-          Higher confidence means the LLM is more certain, so trust it.
-        - If newer score is higher → always accept.
-        - Otherwise → keep old score (don't decrease on uncertain data).
+        Merge a newer extraction, keeping the higher score per dimension
+        when the newer confidence >= the older confidence.
+        Scores never decrease (monotonic).
         """
 
         def _pick(old_s: int, old_c: float, new_s: int, new_c: float) -> tuple[int, float]:
-            # Confidence increased → trust the new score even if lower
-            if new_c > old_c:
+            if new_c >= old_c and new_s >= old_s:
                 return new_s, new_c
-            # Score increased → always accept
             if new_s > old_s:
                 return new_s, max(old_c, new_c)
-            # Otherwise keep old (uncertain decrease = ignore)
             return old_s, old_c
 
         cs, cc = _pick(

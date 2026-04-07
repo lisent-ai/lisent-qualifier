@@ -1,5 +1,3 @@
-from typing import Any
-
 from pydantic import BaseModel, Field
 
 
@@ -13,4 +11,3 @@ class ChatMessageResponse(BaseModel):
     msg_count: int
     champ_scheduled: bool = False
     handoff_triggered: bool = False
-    signal_analysis: dict[str, Any] | None = None

@@ -117,8 +117,8 @@ class CompositeScorer:
         # Confidence multiplier: low-confidence extractions reduce impact
         conf_mult = self._confidence_multiplier(champ)
 
-        # Apply confidence, asymmetric negatives (0.5x weight), seasonal
-        adjusted = raw * conf_mult + negative_adjustment * 0.5 + seasonal_modifier
+        # Apply confidence, negatives, seasonal
+        adjusted = raw * conf_mult + negative_adjustment + seasonal_modifier
 
         # Clamp to [0, 100]
         final = max(0, min(100, int(round(adjusted))))
@@ -149,29 +149,9 @@ class CompositeScorer:
         return 0.7 + 0.3 * avg
 
     @staticmethod
-    def controlled_merge(
-        old_score: int,
-        new_result: CompositeResult,
-        score_floor: int = 30,
-        max_decrease: int = 10,
-    ) -> int:
-        """Allow controlled decrease with floor protection.
-
-        - Score can increase without limit.
-        - Score can decrease at most ``max_decrease`` per extraction.
-        - Score never drops below ``score_floor``.
-        """
-        new = new_result.final_score
-        if new >= old_score:
-            return new
-        # Allow gentle decrease, capped
-        return max(new, old_score - max_decrease, score_floor)
-
-    # Keep backward compat
-    @staticmethod
     def monotonic_merge(
         old_score: int,
         new_result: CompositeResult,
     ) -> int:
-        """Ensure final score never decreases (legacy)."""
+        """Ensure final score never decreases."""
         return max(old_score, new_result.final_score)

@@ -149,46 +149,12 @@ class QualificationJudgmentResult(BaseModel):
         default_factory=SectorQualifiersResult,
     )
 
-    # Handoff decision (Layer 2 — judge decides if lead is ready for sales)
-    handoff_ready: bool = False
-    handoff_reason: str = ""
-
     # Next question recommendation (replaces gap routing heuristic)
     missing_info: list[str] = Field(default_factory=list)
     recommended_next_question: str = ""
 
     # Overall confidence
     confidence: Literal["low", "medium", "high"] = "low"
-
-    # Lead field enrichment — fill empty/unknown fields from conversation
-    extracted_budget_range: str = Field(
-        default="",
-        description="Budget range derived from conversation: under_500k|500k_1m|1m_3m|3m_10m|over_10m",
-    )
-    extracted_budget_amount: int | None = Field(
-        default=None,
-        description="Budget amount in TL derived from conversation",
-    )
-    extracted_project_type: str = Field(
-        default="",
-        description="Project type: residential|commercial|industrial|renovation|land",
-    )
-    extracted_timeline_urgency: str = Field(
-        default="",
-        description="Timeline: immediate|short|medium|long",
-    )
-    extracted_decision_authority: str = Field(
-        default="",
-        description="Authority: sole|joint|influencer",
-    )
-    extracted_city: str = Field(
-        default="",
-        description="City/location mentioned in conversation",
-    )
-    extracted_project_details: str = Field(
-        default="",
-        description="Brief project description (e.g. '3 katlı otel, 40 oda, havuzlu')",
-    )
 
     @property
     def total(self) -> int:
