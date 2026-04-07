@@ -47,13 +47,22 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://app:qualifierpass@db:5432/lead_qualifier"
 
     # Qualification Judge
-    qualification_judge_model: str = "openai/gpt-oss-120b"
+    qualification_judge_model: str = "llama-3.3-70b-versatile"
     qualification_judge_timeout: int = 30
     qualification_judge_max_tokens: int = 2048
     judge_borderline_low: int = 40
     judge_borderline_high: int = 70
     judge_self_consistency_passes: int = 3
     judge_fallback_to_champ: bool = True
+
+    # Smart extraction
+    smart_extraction_enabled: bool = True
+    signal_trigger_min_message_length: int = 15
+    score_floor_multiplier: float = 0.6
+    score_min_floor: int = 30
+    score_max_decrease_per_extraction: int = 10
+    engagement_decay_start_minutes: int = 15
+    negative_signal_weight: float = 0.5  # asymmetric: negatives count half
 
     # GreenAPI / WhatsApp
     greenapi_base_url: str = "https://api.green-api.com"

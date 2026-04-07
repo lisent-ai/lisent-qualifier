@@ -29,7 +29,11 @@ class EngagementResult:
         }
 
 
-def compute_engagement_score(messages: list[dict]) -> EngagementResult:
+def compute_engagement_score(
+    messages: list[dict],
+    current_time: float | None = None,
+    decay_start_minutes: int = 15,
+) -> EngagementResult:
     """
     Compute engagement score from conversation messages.
 
@@ -40,6 +44,9 @@ def compute_engagement_score(messages: list[dict]) -> EngagementResult:
       - Message substance:    0-25 pts
       - Question frequency:   0-20 pts
       - Conversation depth:   0-25 pts
+
+    Time-based decay: reduces score when user is inactive.
+    Only affects engagement, not CHAMP dimensions.
     """
     user_msgs = [m for m in messages if m.get("role") == "user"]
     details: list[str] = []
@@ -101,6 +108,24 @@ def compute_engagement_score(messages: list[dict]) -> EngagementResult:
         details.append(f"Derin sohbet ({len(user_msgs)} mesaj)")
 
     total = min(100, speed_pts + substance_pts + q_pts + depth_pts)
+
+    # ── Time-based decay ─────────────────────────────────────────────
+    if current_time and user_msgs:
+        last_user_ts = max(
+            (m.get("ts", 0) for m in user_msgs if m.get("ts")),
+            default=0,
+        )
+        if last_user_ts > 0:
+            minutes_since = (current_time - last_user_ts) / 60
+            if minutes_since > decay_start_minutes:
+                # Gradual decay: ~10% per 15min after start, capped at 30%
+                decay_pct = min(0.30, (minutes_since - decay_start_minutes) / 150)
+                total = int(total * (1 - decay_pct))
+                if decay_pct > 0.05:
+                    details.append(f"Yanıt gecikmesi ({int(minutes_since)}dk)")
+
+    # Engagement floor: never below 5
+    total = max(5, total)
 
     return EngagementResult(
         score=total,
