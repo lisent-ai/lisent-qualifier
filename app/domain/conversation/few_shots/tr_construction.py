@@ -1,91 +1,96 @@
 """
-Turkish construction sector few-shot examples for CHAMP extraction.
+Turkish construction / real estate sector few-shot examples for CHAMP extraction.
 
-These examples help small local models (4B-9B params) produce
-accurate, calibrated scores.
+These examples help small local models produce more consistent
+qualification signals for project intent, authority, budget, and timing.
 """
 
 EXAMPLES: list[dict] = [
     {
         "conversation": (
-            'MÜŞTERİ: "5 milyon bütçemiz var, Antalya\'da otel inşaatı düşünüyoruz. '
-            'Kararı ben veriyorum, 3 ay içinde başlamak istiyoruz."'
+            'MÜŞTERİ: "Girne tarafında deniz manzaralı villa bakıyorum. '
+            'Daha çok yatırım için düşünüyorum. Bütçem 600-800 bin euro civarı. '
+            'Kararı ben veriyorum. Uygun bir fırsat çıkarsa 1-2 ay içinde ilerleyebilirim."'
         ),
         "output": {
-            "challenges_score": 20,
-            "authority_score": 23,
-            "money_score": 22,
+            "challenges_score": 22,
+            "authority_score": 24,
+            "money_score": 23,
             "prioritization_score": 20,
-            "challenges_notes": "Otel inşaatı, Antalya, net proje tipi",
-            "authority_notes": "Tek karar verici olarak belirtti",
-            "money_notes": "5M TL bütçe belirtildi",
-            "prioritization_notes": "3 ay içinde başlamak istiyor",
-            "challenges_confidence": 0.8,
-            "authority_confidence": 0.9,
-            "money_confidence": 0.85,
-            "prioritization_confidence": 0.85,
+            "challenges_notes": "Girne, deniz manzaralı villa, yatırım amacı net",
+            "authority_notes": "Kararı kendisinin verdiğini belirtti",
+            "money_notes": "600-800 bin euro bütçe belirtildi",
+            "prioritization_notes": "Uygun fırsatta 1-2 ay içinde ilerleyebilir",
+            "challenges_confidence": 0.9,
+            "authority_confidence": 0.95,
+            "money_confidence": 0.9,
+            "prioritization_confidence": 0.8,
             "confidence": "high",
         },
     },
     {
-        "conversation": 'MÜŞTERİ: "İnşaat maliyetleri ne kadar?"',
+        "conversation": (
+            'MÜŞTERİ: "Kıbrıs’ta yatırım düşünüyorum ama henüz tam karar vermedim. '
+            'Daha çok genel bilgi almak istiyorum."'
+        ),
         "output": {
-            "challenges_score": 5,
-            "authority_score": 0,
-            "money_score": 3,
-            "prioritization_score": 0,
-            "challenges_notes": "Genel inşaat ilgisi, spesifik proje yok",
-            "authority_notes": "Bilgi yok",
-            "money_notes": "Fiyat soruyor ama bütçe belirtmedi",
-            "prioritization_notes": "Zaman bilgisi yok",
-            "challenges_confidence": 0.2,
-            "authority_confidence": 0.0,
+            "challenges_score": 8,
+            "authority_score": 8,
+            "money_score": 2,
+            "prioritization_score": 3,
+            "challenges_notes": "Genel yatırım ilgisi var ama proje tipi belirsiz",
+            "authority_notes": "Kendi adına konuşuyor gibi ama karar gücü net değil",
+            "money_notes": "Bütçe bilgisi yok",
+            "prioritization_notes": "Zamanlama belirtmedi",
+            "challenges_confidence": 0.45,
+            "authority_confidence": 0.35,
             "money_confidence": 0.1,
-            "prioritization_confidence": 0.0,
+            "prioritization_confidence": 0.15,
             "confidence": "low",
         },
     },
     {
         "conversation": (
-            'MÜŞTERİ: "Arsam var, imarlı. Villa yaptırmak istiyorum ama '
-            'bütçeyi henüz netleştirmedim."'
+            'MÜŞTERİ: "Ben Türkiye’deyim, önce uzaktan bilgi alayım istiyorum. '
+            'Girne’de deniz manzaralı 2+1 ya da küçük villa bakabilirim. '
+            'Bütçeyi netleştirmedim ama kredi de düşünebilirim."'
         ),
         "output": {
-            "challenges_score": 18,
+            "challenges_score": 17,
             "authority_score": 10,
-            "money_score": 5,
-            "prioritization_score": 8,
-            "challenges_notes": "Villa projesi, arsası var, imar onaylı",
-            "authority_notes": "Kendisi için bakıyor ama karar durumu belirsiz",
-            "money_notes": "Bütçe henüz netleşmemiş",
-            "prioritization_notes": "Aciliyet belirtmedi ama arsa hazır",
-            "challenges_confidence": 0.85,
+            "money_score": 8,
+            "prioritization_score": 7,
+            "challenges_notes": "Girne, deniz manzarası, 2+1 veya küçük villa tercihi var",
+            "authority_notes": "Kendisi için bakıyor gibi görünüyor ama karar durumu net değil",
+            "money_notes": "Bütçe net değil, kredi seçeneğine açık",
+            "prioritization_notes": "Uzaktan bilgi aşamasında, aciliyet düşük/orta",
+            "challenges_confidence": 0.8,
             "authority_confidence": 0.4,
-            "money_confidence": 0.2,
+            "money_confidence": 0.35,
             "prioritization_confidence": 0.3,
             "confidence": "medium",
         },
     },
     {
         "conversation": (
-            'MÜŞTERİ: "3 katlı ticari bina, 1500m², İstanbul Ataşehir\'de. '
-            'Ortağımla beraber karar vereceğiz. Bütçemiz 8-10 milyon arası, '
-            'nakit ödeyeceğiz. Bu yıl içinde bitirmemiz lazım."'
+            'MÜŞTERİ: "Airbnb için deniz tarafında bir villa arıyorum. '
+            'Peşinat olarak 50 bin sterlinim var. Gerekirse kalan kısmı krediyle tamamlarım. '
+            'Eşimle beraber değerlendireceğiz ama son kararı büyük ihtimalle ben vereceğim."'
         ),
         "output": {
-            "challenges_score": 24,
-            "authority_score": 15,
-            "money_score": 24,
-            "prioritization_score": 18,
-            "challenges_notes": "3 katlı ticari, 1500m², Ataşehir, çok net proje",
-            "authority_notes": "Ortakla ortak karar",
-            "money_notes": "8-10M TL, nakit ödeme",
-            "prioritization_notes": "Yıl içinde bitirilmesi gerekiyor",
-            "challenges_confidence": 0.95,
+            "challenges_score": 20,
+            "authority_score": 16,
+            "money_score": 16,
+            "prioritization_score": 10,
+            "challenges_notes": "Airbnb amaçlı deniz tarafında villa arıyor, kullanım amacı net",
+            "authority_notes": "Eşiyle beraber değerlendiriyor ama karar ağırlığı kendisinde",
+            "money_notes": "50 bin sterlin peşinat var, krediye açık",
+            "prioritization_notes": "Zamanlama net değil",
+            "challenges_confidence": 0.9,
             "authority_confidence": 0.7,
-            "money_confidence": 0.9,
-            "prioritization_confidence": 0.8,
-            "confidence": "high",
+            "money_confidence": 0.75,
+            "prioritization_confidence": 0.25,
+            "confidence": "medium",
         },
     },
 ]
@@ -100,3 +105,5 @@ def format_few_shot_examples() -> str:
         output_str = json.dumps(ex["output"], ensure_ascii=False, indent=2)
         parts.append(f"### Örnek {i}\n{ex['conversation']}\nSonuç:\n{output_str}\n")
     return "\n".join(parts)
+
+    

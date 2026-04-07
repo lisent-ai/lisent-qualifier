@@ -13,12 +13,12 @@ from app.domain.conversation.templates.registry import TemplateRegistry
 
 _GAP_HINTS = {
     "tr": {
-        "all_missing": "Tüm CHAMP boyutları eksik. Öncelik: Challenges (ne inşa etmek istiyorlar?)",
-        "challenges": "Ne tür bir proje düşünüyor? Detayları sor.",
+        "all_missing": "Tüm boyutlar eksik. Öncelik: ne tür mülk arıyorlar?",
+        "challenges": "Ne tür mülk düşünüyor? Tercihlerini anlamaya çalış.",
         "authority": "Karar verici kim? Kiminle birlikte karar veriyorlar?",
-        "money": "Bütçesi hakkında bilgi al.",
-        "prioritization": "Ne zaman başlamak istiyor? Aciliyet durumunu sor.",
-        "prefix": "En büyük eksik boyut: {dim} (skor: {score}/25). {hint}",
+        "money": "Bütçe veya finansal hazırlık hakkında sinyal topla.",
+        "prioritization": "Ne zaman ilerlemek istiyor? Zamanlama sinyali al.",
+        "prefix": "Eksik alan: {dim} ({score}/25). {hint}",
     },
     "en": {
         "all_missing": "All CHAMP dimensions are missing. Priority: Challenges (what do they want to build?)",
@@ -49,9 +49,12 @@ _TONE_MAP_EN = {
 
 
 def _compute_champ_gaps(champ_json: dict[str, Any] | None, language: str = "tr") -> str:
-    # If judge provided a recommended next question, use it directly
+    # If judge provided a recommended next question, wrap with naturalness guard
     if champ_json and champ_json.get("recommended_next_question"):
-        return champ_json["recommended_next_question"]
+        rnq = champ_json["recommended_next_question"]
+        if language in ("tr", "turkish"):
+            return f"Önerilen soru: {rnq}\nBu soruyu DOĞRUDAN sorma — doğal sohbet akışı içinde sor."
+        return f"Suggested question: {rnq}\nDo NOT ask this directly — weave it naturally into the conversation."
 
     hints = _GAP_HINTS.get(language, _GAP_HINTS["en"])
 
