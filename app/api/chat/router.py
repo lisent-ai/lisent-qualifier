@@ -12,7 +12,6 @@ from app.application.conversation.commands import SendMessageCommand
 from app.application.scoring.champ_extractor import extract_champ_task
 from app.application.qualification.handler import HandoffHandler
 from app.infrastructure.redis.client import get_redis
-from app.metrics import HANDOFF_COUNTER, INSTANT_HANDOFF_TRIGGERS
 
 log = structlog.get_logger(__name__)
 
@@ -37,21 +36,13 @@ async def send_message(
     champ_scheduled = False
     handoff_triggered = False
 
-    if result.get("should_instant_handoff"):
-        # LAYER 1: Instant handoff — skip extraction entirely
-        instant_reason = result.get("instant_handoff_reason", "")
-        HANDOFF_COUNTER.labels(path="chat_instant").inc()
-        INSTANT_HANDOFF_TRIGGERS.labels(reason=instant_reason).inc()
+    if result.get("should_force_handoff"):
+        # Max messages reached — trigger handoff immediately
         handoff_handler = HandoffHandler(session_repo, score_repo)
         background_tasks.add_task(handoff_handler.handle, session_id)
         handoff_triggered = True
     elif result.get("should_extract_champ"):
-        # LAYER 2 + 3: Judge extraction (force_handoff passed through)
-        force_handoff = result.get("force_handoff_after_extract", False)
-        background_tasks.add_task(
-            extract_champ_task, session_id, session_repo, score_repo,
-            force_handoff=force_handoff,
-        )
+        background_tasks.add_task(extract_champ_task, session_id, session_repo, score_repo)
         champ_scheduled = True
 
     return {
@@ -60,7 +51,6 @@ async def send_message(
         "msg_count": result["msg_count"],
         "champ_scheduled": champ_scheduled,
         "handoff_triggered": handoff_triggered,
-        "signal_analysis": result.get("signal_analysis"),
     }
 
 

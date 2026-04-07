@@ -39,10 +39,6 @@ async def stream_chat(
     session_id: str,
 ) -> AsyncGenerator[str, None]:
     """Yields token strings. Raises on circuit open or Groq error."""
-    from app.infrastructure.llm.groq_rate_limiter import acquire
-    if not await acquire(estimated_tokens=2000, priority="chat"):
-        raise RuntimeError("Groq rate limit — chat throttled")
-
     settings = get_settings()
     client = get_groq_client()
 
@@ -62,10 +58,6 @@ async def stream_chat(
 
 async def complete_chat(messages: list[dict]) -> str:
     """Non-streaming completion for handoff closing message."""
-    from app.infrastructure.llm.groq_rate_limiter import acquire
-    if not await acquire(estimated_tokens=500, priority="other"):
-        return ""  # Skip closing message if rate limited
-
     settings = get_settings()
     client = get_groq_client()
 

@@ -95,16 +95,10 @@ class ConstructionNegativeDetector(NegativeSignalDetector):
                 signals = ["Rakip firma çalışanı tespit edildi — diskalifiye"]
                 return NegativeSignalResult(total_penalty=total_penalty, signals=signals)
 
-        # -- Inactivity decay (responsive: starts at 2h, not 48h) --
-        if hours_since_last_activity > 2:
-            if hours_since_last_activity > 48:
-                decay = -25  # cap
-            elif hours_since_last_activity > 24:
-                decay = -15
-            elif hours_since_last_activity > 6:
-                decay = -10
-            else:
-                decay = -5  # 2-6 hours
+        # ── Inactivity decay ─────────────────────────���───────────────────
+        if hours_since_last_activity > 48:
+            days = hours_since_last_activity / 24
+            decay = min(int(days - 2) * -5, -25)  # -5/day after 48h, cap at -25
             total_penalty += decay
             signals.append(f"{hours_since_last_activity:.0f}+ saat yanıt yok")
 

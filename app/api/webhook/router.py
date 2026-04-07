@@ -11,7 +11,7 @@ from app.infrastructure.crm.rest_client import (
     store_webhook_data,
 )
 from app.infrastructure.db.pool import get_db_pool
-from app.infrastructure.db.lead_repo import upsert_lead
+from app.infrastructure.db.lead_repo import upsert_lead, check_phone_duplicate
 from app.infrastructure.llm.field_mapper import map_fields
 import structlog
 
@@ -84,17 +84,24 @@ async def receive_lead(
     )
     result = await handler.handle(cmd)
 
-
+    # ── Phone-based duplicate check ──���──────────────────────────────────────
+    duplicate_of: str | None = None
+    if mapping.phone:
+        try:
+            pool = get_db_pool()
+            existing = await check_phone_duplicate(
+                pool, company_id=company_id, phone=mapping.phone,
+            )
+            if existing and existing["lead_id"] != lead_id:
+                duplicate_of = existing["id"]
+                log.info("duplicate_lead_detected",
+                         lead_id=lead_id, duplicate_of=duplicate_of,
+                         existing_name=existing.get("name"))
+        except Exception as exc:
+            log.warning("phone_duplicate_check_failed", error=str(exc))
 
     # ── PostgreSQL'e kaydet ────────────────────────────────────────────────
     result_status = result.get("status", "chat_path")
-
-    # Duplicate from Redis idempotency — skip DB write entirely,
-    # the lead already exists from the first webhook call.
-    if result_status == "duplicate":
-        log.info("duplicate_skip_db", lead_id=lead_id)
-        return result
-
     path = result_status.replace("_path", "")
     # Fast path → lead direkt qualified, chat path → new (AI bekliyor)
     lead_status = "qualified" if result_status == "fast_path" else "new"
@@ -111,12 +118,12 @@ async def receive_lead(
             city=mapping.city,
             source=mapping.source,
             project_type=mapping.project_type,
-            budget_range=mapping.budget_range,
             score=result.get("score", 0),
             path=path,
             extra_data=mapping.extra_fields,
             score_breakdown=result.get("score_breakdown"),
             raw_payload=raw_payload,
+            duplicate_of=duplicate_of,
         )
 
         # Fast path → status direkt qualified olarak güncelle
@@ -172,19 +179,9 @@ async def receive_rag_data(token: str, request: Request) -> dict:
 async def _upsert_session(
     pool, lead_db_id: str, company_id: str, session_id: str, score: int,
 ) -> None:
-    """Chat path lead'inin session'ını qualifier_sessions tablosuna yaz.
-
-    Aynı lead_id için zaten session varsa yeni oluşturmaz (duplicate webhook koruması).
-    """
+    """Chat path lead'inin session'ını qualifier_sessions tablosuna yaz."""
+    import json as _j
     try:
-        existing = await pool.fetchval(
-            "SELECT id FROM qualifier_sessions WHERE lead_id = $1::uuid LIMIT 1",
-            lead_db_id,
-        )
-        if existing:
-            log.debug("session_already_exists", lead_db_id=lead_db_id, existing_session=str(existing))
-            return
-
         await pool.execute(
             """
             INSERT INTO qualifier_sessions (id, lead_id, company_id, score, stage, messages)
