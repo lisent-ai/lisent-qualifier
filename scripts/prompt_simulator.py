@@ -95,8 +95,9 @@ class SimConfig:
     @classmethod
     def from_env(cls, env_path: str | None = None) -> "SimConfig":
         """Ortam değişkenlerinden veya .env.simulator dosyasından yükle."""
+        env_file_path: Path | None = Path(env_path).resolve() if env_path else None
         if env_path and Path(env_path).exists():
-            for line in Path(env_path).read_text().splitlines():
+            for line in Path(env_path).read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
@@ -131,6 +132,16 @@ class SimConfig:
             cfg.debounce_seconds = float(debounce)
 
         # Fake lead override (JSON string)
+        lead_file = os.environ.get("SIM_FAKE_LEAD_FILE")
+        if lead_file:
+            lead_file_path = Path(lead_file)
+            if not lead_file_path.is_absolute() and env_file_path is not None:
+                lead_file_path = (env_file_path.parent / lead_file_path).resolve()
+            try:
+                cfg.fake_lead = json.loads(lead_file_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+
         lead_json = os.environ.get("SIM_FAKE_LEAD_JSON")
         if lead_json:
             try:
