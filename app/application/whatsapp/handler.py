@@ -5,7 +5,7 @@ Akış:
   1. idMessage dedup kontrolü (GreenAPI 24h retry'a karşı)
   2. CRM'den idInstance → company_id + api_token çek
   3. phone → Redis'te mevcut session var mı?
-     YOK → CRM'de customer + lead oluştur → ai-lead-qualifier session aç
+     YOK → ai-lead-qualifier session aç (CRM'de customer/lead OLUŞTURULMAZ)
      VAR → session_id al
   4. Mesajı Redis buffer'a ekle (debounce)
   5. 4 saniye bekle — yeni mesaj gelmezse buffer'ı birleştir
@@ -13,11 +13,20 @@ Akış:
   7. AI yanıtını topla + CHAMP extraction background'da
   8. GreenAPI ile WhatsApp'a geri gönder
 
+NOT: CRM'de customer + lead kaydı SADECE handoff sırasında oluşturulur
+(fast path → anında, chat path → HandoffHandler). Qualify olmamış
+leadler Customer Directory'ye yansımaz.
+
 Redis key şeması:
   phone_session:{company_id}:{phone}  → session_id      (24h TTL)
   whatsapp_dedup:{idMessage}          → "1"             (5dk TTL)
   wa_buffer:{company_id}:{phone}      → LIST of texts   (5dk TTL)
   wa_debounce:{company_id}:{phone}    → timestamp       (10s TTL)
+
+Customer/Lead CRM kaydı:
+  - İlk mesajda oluşturulMAZ (lead sadece qualifier'da kalır)
+  - Fast path: lead anında qualify olursa _start_new_lead_session'da oluşturulur
+  - Chat path: lead handoff ile qualify olursa HandoffHandler'da oluşturulur
 """
 import asyncio
 import time
@@ -392,31 +401,14 @@ class WhatsAppMessageHandler:
     ) -> Optional[str]:
         """
         Yeni bir WhatsApp lead'i için:
-          1. CRM'de customer bul veya oluştur
-          2. CRM'de lead oluştur
-          3. ai-lead-qualifier session başlat
-          4. phone → session_id Redis mapping'i kaydet
+          1. ai-lead-qualifier session başlat (customer/lead oluşturma YOK)
+          2. phone → session_id Redis mapping'i kaydet
+
+        NOT: CRM'de customer + lead kaydı sadece handoff sırasında oluşturulur
+        (HandoffHandler). Qualify olmamış leadler Customer Directory'ye düşmez.
         """
-        customer = await find_or_create_customer(
-            company_id=company_id,
-            phone=phone,
-            name=sender_name or phone,
-        )
-        if not customer:
-            log.error("whatsapp_customer_creation_failed", phone=phone)
-            return None
-
-        lead = await create_lead(
-            company_id=company_id,
-            customer_id=customer["id"],
-            source="whatsapp",
-            extra_data={"channel": "whatsapp", "first_message": text},
-        )
-
-        lead_id = lead["id"] if lead else None
         intake_handler = ProcessWebhookLeadHandler(self._session_repo, self._score_repo)
         cmd = ProcessWebhookLeadCommand(lead_data={
-            "lead_id": lead_id,
             "name": sender_name or phone,
             "phone": phone,
             "source": "whatsapp",
@@ -426,6 +418,21 @@ class WhatsAppMessageHandler:
 
         if intake_result.get("status") == "fast_path":
             log.info("whatsapp_fast_path", phone=phone, score=intake_result.get("score"))
+
+            # Lead anında qualify oldu — şimdi CRM'de customer + lead oluştur
+            customer = await find_or_create_customer(
+                company_id=company_id,
+                phone=phone,
+                name=sender_name or phone,
+            )
+            if customer:
+                await create_lead(
+                    company_id=company_id,
+                    customer_id=customer["id"],
+                    source="whatsapp",
+                    extra_data={"channel": "whatsapp", "first_message": text},
+                )
+
             settings = get_settings()
             qualified_msg = settings.whatsapp_qualified_message
             if qualified_msg:

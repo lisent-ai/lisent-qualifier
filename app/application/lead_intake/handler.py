@@ -145,7 +145,9 @@ class ProcessWebhookLeadHandler:
         handoff = {
             "raw_payload": lead.raw_payload,
             "lead": lead_json,
-            "score": score,
+            "pre_score": score,
+            "qualified_score": score,  # fast path: pre = qualified (skipped chat)
+            "score": score,  # backward compat
             "reasoning_report": reasoning_json,
             "champ": None,
             "session_id": None,
@@ -156,7 +158,14 @@ class ProcessWebhookLeadHandler:
         CRM_SEND_COUNTER.labels(path="fast", success=str(success)).inc()
 
         log.info("fast_path_complete", lead_id=lead.id, score=score, crm_sent=success)
-        return {"status": "fast_path", "lead_id": lead.id, "score": score, "crm_sent": success}
+        return {
+            "status": "fast_path",
+            "lead_id": lead.id,
+            "pre_score": score,
+            "qualified_score": score,
+            "score": score,  # backward compat
+            "crm_sent": success,
+        }
 
     async def _chat_path(
         self,
@@ -167,9 +176,11 @@ class ProcessWebhookLeadHandler:
         company_id: str = "",
     ) -> dict[str, Any]:
         session_id = str(uuid.uuid4())
+        lead_dict = lead.to_dict()
+        lead_dict["initial_fit_score"] = score  # preserve pre_score for handoff
         session = ConversationSession(
             session_id=session_id,
-            lead_json=lead.to_dict(),
+            lead_json=lead_dict,
             score=score,
             stage=SessionStage.PENDING,  # AI bekler, kullanıcı başlatır
             fallback_url=fallback_url,
@@ -185,5 +196,6 @@ class ProcessWebhookLeadHandler:
             "status": "chat_path",
             "lead_id": lead.id,
             "session_id": session_id,
-            "score": score,
+            "pre_score": score,
+            "score": score,  # backward compat
         }

@@ -58,7 +58,20 @@ Provide an overall assessment. This is NOT just the sum of 4 dimensions — it i
 - What critical information is still missing?
 - What is the most important question to ask next?
 
-### Step 6: Handoff decision (handoff_ready)
+### Step 6: Lead Data Enrichment (extracted_* fields)
+Fill in the following fields based on information from the conversation.
+ONLY fill fields that were explicitly stated or strongly implied.
+Leave empty ("") if uncertain.
+
+- extracted_budget_range: Budget range (under_500k|500k_1m|1m_3m|3m_10m|over_10m)
+- extracted_budget_amount: Budget in local currency (e.g. 5000000). Null if unclear.
+- extracted_project_type: Project type (residential|commercial|industrial|renovation|land)
+- extracted_timeline_urgency: Timeline (immediate|short|medium|long)
+- extracted_decision_authority: Authority (sole|joint|influencer)
+- extracted_city: Project city/location (e.g. "Antalya")
+- extracted_project_details: Brief project description (e.g. "3-story hotel, 40 rooms, pool")
+
+### Step 7: Handoff decision (handoff_ready)
 Should we route this lead to the sales team now?
 
 Set handoff_ready=true when:

@@ -21,6 +21,7 @@ async def upsert_lead(
     city: str = "",
     source: str = "",
     project_type: str = "",
+    budget_range: str = "",
     score: int = 0,
     path: str = "chat",
     extra_data: dict | None = None,
@@ -32,8 +33,8 @@ async def upsert_lead(
         """
         INSERT INTO qualifier_leads
           (company_id, lead_id, phone, name, email, city, source, project_type,
-           score, path, extra_data, score_breakdown, raw_payload, duplicate_of)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           budget_range, score, path, extra_data, score_breakdown, raw_payload, duplicate_of)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         ON CONFLICT (company_id, lead_id) DO UPDATE
           SET score           = EXCLUDED.score,
               path            = EXCLUDED.path,
@@ -43,6 +44,7 @@ async def upsert_lead(
               city            = COALESCE(NULLIF(EXCLUDED.city, ''), qualifier_leads.city),
               source          = COALESCE(NULLIF(EXCLUDED.source, ''), qualifier_leads.source),
               project_type    = COALESCE(NULLIF(EXCLUDED.project_type, ''), qualifier_leads.project_type),
+              budget_range    = COALESCE(NULLIF(EXCLUDED.budget_range, ''), qualifier_leads.budget_range),
               extra_data      = EXCLUDED.extra_data,
               score_breakdown = EXCLUDED.score_breakdown,
               raw_payload     = COALESCE(EXCLUDED.raw_payload, qualifier_leads.raw_payload),
@@ -51,7 +53,7 @@ async def upsert_lead(
         RETURNING id
         """,
         company_id, lead_id, phone, name, email, city, source, project_type,
-        score, path,
+        budget_range, score, path,
         json.dumps(extra_data or {}),
         json.dumps(score_breakdown) if score_breakdown else None,
         json.dumps(raw_payload, ensure_ascii=False) if raw_payload else None,
@@ -135,9 +137,10 @@ async def list_leads(
     params.append(offset)
     rows = await pool.fetch(
         f"""
-        SELECT id, lead_id, phone, name, score, path, status,
+        SELECT id, lead_id, phone, name, email, city, source,
+               project_type, budget_range, score, path, status,
                extra_data, score_breakdown, raw_payload, duplicate_of,
-               created_at, updated_at
+               assigned_to, created_at, updated_at
         FROM qualifier_leads
         WHERE {where}
         ORDER BY {col} {direction}

@@ -151,6 +151,16 @@ async def takeover_session(
     previous_stage = str(session.stage)
     await repo.set_stage(session_id, SessionStage.HUMAN_TAKEOVER)
 
+    # Persist stage to database (so it survives Redis restart/TTL expiry)
+    try:
+        pool = get_db_pool()
+        await pool.execute(
+            "UPDATE qualifier_sessions SET stage = 'HUMAN_TAKEOVER', updated_at = now() WHERE id = $1::uuid",
+            session_id,
+        )
+    except Exception as exc:
+        log.warning("takeover_db_stage_update_failed", error=str(exc))
+
     # Store previous stage in Redis for resume
     redis = get_redis()
     await redis.set(f"takeover_prev_stage:{session_id}", previous_stage, ex=86400)
@@ -158,10 +168,8 @@ async def takeover_session(
     # Activity log
     try:
         pool = get_db_pool()
-        # Find lead_db_id from session's lead_json
         lead_id = session.lead_json.get("id", "")
         if lead_id and company_id:
-            # Look up lead_db_id from qualifier_leads by lead_id
             row = await pool.fetchrow(
                 "SELECT id FROM qualifier_leads WHERE company_id=$1 AND lead_id=$2",
                 company_id, lead_id,
@@ -265,6 +273,16 @@ async def resume_ai(
         await redis.delete(f"takeover_prev_stage:{session_id}")
 
     await repo.set_stage(session_id, new_stage)
+
+    # Persist stage to database
+    try:
+        pool = get_db_pool()
+        await pool.execute(
+            "UPDATE qualifier_sessions SET stage = $1, updated_at = now() WHERE id = $2::uuid",
+            str(new_stage), session_id,
+        )
+    except Exception as exc:
+        log.warning("resume_ai_db_stage_update_failed", error=str(exc))
 
     log.info("session_ai_resumed", session_id=session_id, actor=body.actor, new_stage=str(new_stage))
     return {"ok": True, "new_stage": str(new_stage)}

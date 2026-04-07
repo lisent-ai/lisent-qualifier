@@ -122,6 +122,41 @@ class SimConfig:
         cfg.ideal_customer_profile = os.environ.get("SIM_IDEAL_CUSTOMER_PROFILE", "")
         cfg.handoff_aggressiveness = os.environ.get("SIM_HANDOFF_AGGRESSIVENESS", "balanced")
 
+        # JSON list alanları
+        forbidden_raw = os.environ.get("SIM_FORBIDDEN_TOPICS", "")
+        if forbidden_raw:
+            try:
+                cfg.forbidden_topics = json.loads(forbidden_raw)
+            except json.JSONDecodeError:
+                cfg.forbidden_topics = [t.strip() for t in forbidden_raw.split(",") if t.strip()]
+
+        faq_raw = os.environ.get("SIM_FAQ_ENTRIES", "")
+        if faq_raw:
+            try:
+                cfg.faq_entries = json.loads(faq_raw)
+            except json.JSONDecodeError:
+                pass
+
+        cq_raw = os.environ.get("SIM_CUSTOM_QUALIFYING_QUESTIONS", "")
+        if cq_raw:
+            try:
+                cfg.custom_qualifying_questions = json.loads(cq_raw)
+            except json.JSONDecodeError:
+                cfg.custom_qualifying_questions = [q.strip() for q in cq_raw.split(",") if q.strip()]
+
+        # Groq ayarları
+        max_tokens = os.environ.get("SIM_GROQ_MAX_TOKENS")
+        if max_tokens:
+            cfg.groq_max_tokens = int(max_tokens)
+
+        temperature = os.environ.get("SIM_GROQ_TEMPERATURE")
+        if temperature:
+            cfg.groq_temperature = float(temperature)
+
+        split_delay = os.environ.get("SIM_SPLIT_MESSAGE_DELAY")
+        if split_delay:
+            cfg.split_message_delay = float(split_delay)
+
         poll = os.environ.get("SIM_POLL_INTERVAL")
         if poll:
             cfg.poll_interval = int(poll)

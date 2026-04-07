@@ -60,6 +60,7 @@ async def send_message(
         "msg_count": result["msg_count"],
         "champ_scheduled": champ_scheduled,
         "handoff_triggered": handoff_triggered,
+        "signal_analysis": result.get("signal_analysis"),
     }
 
 

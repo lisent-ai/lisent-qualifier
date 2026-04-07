@@ -80,13 +80,18 @@ async def extract_champ_task(
             return
 
         # ── Compute composite score ──────────────────────────────────────
+        settings = get_settings()
         msg_dicts = [
             {"role": m.role, "content": m.content, "ts": m.ts}
             for m in session.messages
         ]
-        eng_result = compute_engagement_score(msg_dicts)
+        eng_result = compute_engagement_score(
+            msg_dicts,
+            current_time=time.time(),
+            decay_start_minutes=settings.engagement_decay_start_minutes,
+        )
 
-        # Negative signals: use judge output or rule-based
+        # Negative signals: use judge output or rule-based (asymmetric 0.5x applied in CompositeScorer)
         if scoring_mode in ("llm_judge", "hybrid") and champ_json.get("negative_penalty") is not None:
             neg_adjustment = champ_json.get("negative_penalty", 0)
         else:
@@ -113,7 +118,8 @@ async def extract_champ_task(
             # Only apply engagement as a minor boost and negatives/seasonal.
             holistic = champ_json["holistic_score"]
             eng_boost = int(eng_result.score * 0.10)  # slight engagement bonus
-            raw_score = holistic + eng_boost + neg_adjustment + seasonal
+            # Asymmetric: negatives count half to protect real buyers
+            raw_score = holistic + eng_boost + int(neg_adjustment * 0.5) + seasonal
             final_score = max(0, min(100, raw_score))
 
             result = CompositeResult(
@@ -137,8 +143,20 @@ async def extract_champ_task(
                 seasonal_modifier=seasonal,
             )
 
-        # Monotonic: never decrease
-        new_score = CompositeScorer.monotonic_merge(session.score, result)
+        # Controlled merge: allow gentle decrease with floor protection
+        settings = get_settings()
+        lead_json = session.lead_json or {}
+        initial_fit = lead_json.get("initial_fit_score", session.score)
+        score_floor = max(
+            int(initial_fit * settings.score_floor_multiplier),
+            settings.score_min_floor,
+        )
+        new_score = CompositeScorer.controlled_merge(
+            session.score,
+            result,
+            score_floor=score_floor,
+            max_decrease=settings.score_max_decrease_per_extraction,
+        )
 
         # ── Update session ───────────────────────────────────────────────
         await session_repo.update_champ(session_id, champ_json, new_score)
@@ -158,11 +176,14 @@ async def extract_champ_task(
         # ── Publish score update via Redis PubSub ────────────────────────
         from app.infrastructure.redis.client import get_redis
         redis = get_redis()
+        pre_score = (session.lead_json or {}).get("initial_fit_score", 0)
         await redis.publish(
             f"score:{session_id}",
             json.dumps({
                 "session_id": session_id,
-                "score": new_score,
+                "pre_score": pre_score,
+                "qualified_score": new_score,
+                "score": new_score,  # backward compat
                 "champ": champ_json,
                 "engagement": eng_result.to_dict(),
                 "composite": result.to_dict(),

@@ -57,6 +57,15 @@ class QualificationJudgment:
     # CoT thinking (stored for audit, not used downstream)
     thinking: str = ""
 
+    # Lead field enrichment (from LLM extraction)
+    extracted_budget_range: str = ""
+    extracted_budget_amount: int | None = None
+    extracted_project_type: str = ""
+    extracted_timeline_urgency: str = ""
+    extracted_decision_authority: str = ""
+    extracted_city: str = ""
+    extracted_project_details: str = ""
+
     # Metadata
     extraction_version: int = 0
     scoring_mode: str = "llm_judge"
@@ -107,15 +116,21 @@ class QualificationJudgment:
 
     def merge_monotonic(self, newer: QualificationJudgment) -> QualificationJudgment:
         """
-        Merge with a newer judgment. Scores never decrease (monotonic).
-        Same per-dimension logic as CHAMPScore, plus holistic_score max.
+        Merge with a newer judgment using confidence-gated decrease.
+
+        - If newer confidence is HIGHER → accept new score (even if lower).
+        - If newer score is higher → always accept.
+        - Otherwise → keep old score.
         """
 
         def _pick(old_s: int, old_c: float, new_s: int, new_c: float) -> tuple[int, float]:
-            if new_c >= old_c and new_s >= old_s:
+            # Confidence increased → trust the new score even if lower
+            if new_c > old_c:
                 return new_s, new_c
+            # Score increased → always accept
             if new_s > old_s:
                 return new_s, max(old_c, new_c)
+            # Otherwise keep old
             return old_s, old_c
 
         cs, cc = _pick(
@@ -158,7 +173,11 @@ class QualificationJudgment:
             authority_confidence=ac,
             money_confidence=mc,
             prioritization_confidence=pc,
-            holistic_score=max(self.holistic_score, newer.holistic_score),
+            holistic_score=(
+                newer.holistic_score
+                if newer.avg_confidence > self.avg_confidence
+                else max(self.holistic_score, newer.holistic_score)
+            ),
             holistic_reasoning=newer.holistic_reasoning or self.holistic_reasoning,
             icp_fit_assessment=newer.icp_fit_assessment or self.icp_fit_assessment,
             negative_signals=merged_neg,
@@ -229,6 +248,14 @@ class QualificationJudgment:
             "handoff_ready": self.handoff_ready,
             "handoff_reason": self.handoff_reason,
             "scoring_mode": self.scoring_mode,
+            # Lead enrichment fields
+            "extracted_budget_range": self.extracted_budget_range,
+            "extracted_budget_amount": self.extracted_budget_amount,
+            "extracted_project_type": self.extracted_project_type,
+            "extracted_timeline_urgency": self.extracted_timeline_urgency,
+            "extracted_decision_authority": self.extracted_decision_authority,
+            "extracted_city": self.extracted_city,
+            "extracted_project_details": self.extracted_project_details,
         }
 
     @classmethod
@@ -258,6 +285,13 @@ class QualificationJudgment:
             handoff_ready=data.get("handoff_ready", False),
             handoff_reason=data.get("handoff_reason", ""),
             thinking=data.get("thinking", ""),
+            extracted_budget_range=data.get("extracted_budget_range", ""),
+            extracted_budget_amount=data.get("extracted_budget_amount"),
+            extracted_project_type=data.get("extracted_project_type", ""),
+            extracted_timeline_urgency=data.get("extracted_timeline_urgency", ""),
+            extracted_decision_authority=data.get("extracted_decision_authority", ""),
+            extracted_city=data.get("extracted_city", ""),
+            extracted_project_details=data.get("extracted_project_details", ""),
             extraction_version=data.get("extraction_version", 0),
             scoring_mode=data.get("scoring_mode", "llm_judge"),
         )
@@ -298,6 +332,13 @@ class QualificationJudgment:
             handoff_ready=getattr(result, "handoff_ready", False),
             handoff_reason=getattr(result, "handoff_reason", ""),
             thinking=result.thinking,
+            extracted_budget_range=getattr(result, "extracted_budget_range", ""),
+            extracted_budget_amount=getattr(result, "extracted_budget_amount", None),
+            extracted_project_type=getattr(result, "extracted_project_type", ""),
+            extracted_timeline_urgency=getattr(result, "extracted_timeline_urgency", ""),
+            extracted_decision_authority=getattr(result, "extracted_decision_authority", ""),
+            extracted_city=getattr(result, "extracted_city", ""),
+            extracted_project_details=getattr(result, "extracted_project_details", ""),
             extraction_version=extraction_version,
             scoring_mode="llm_judge",
         )

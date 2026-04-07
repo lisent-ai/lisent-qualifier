@@ -16,6 +16,7 @@ from app.infrastructure.llm.groq_client import stream_chat
 from app.application.scoring.champ_extractor import extract_champ_task
 from app.application.conversation.commands import SendMessageCommand
 from app.domain.scoring.signals.handoff_triggers import check_instant_handoff
+from app.domain.scoring.signals.message_analyzer import MessageAnalyzer
 from app.infrastructure.crm.rest_client import (
     fetch_company_kb_documents,
     fetch_company_ai_config,
@@ -97,9 +98,57 @@ class ConversationHandler:
                 "stage": str(session.stage),
             }
 
-        # ── LAYER 2: Periodic extraction (every N messages) ─────────────
+        # ── LAYER 1.5: Per-message LLM classification + signal analysis ─
         settings = get_settings()
-        should_extract = (msg_count % settings.champ_extract_every_n_messages == 0)
+        sector = (company_config or {}).get("industry_focus", "construction")
+
+        msg_dicts = [
+            {"role": m.role, "content": m.content, "ts": m.ts}
+            for m in session.messages
+        ]
+        conversation_stage = "early" if msg_count <= 3 else ("mid" if msg_count <= 6 else "late")
+
+        # LLM classification (Groq → Local LLM → None)
+        llm_result = None
+        try:
+            from app.infrastructure.llm.message_classifier import classify_message
+            llm_result = await classify_message(
+                message=cmd.content,
+                messages=msg_dicts,
+                stage=conversation_stage,
+            )
+        except Exception as exc:
+            log.debug("llm_classification_error", error=str(exc)[:80])
+
+        analyzer = MessageAnalyzer()
+        signal_result = analyzer.analyze(
+            message=cmd.content,
+            messages=msg_dicts,
+            msg_count=msg_count,
+            language=language,
+            sector=sector,
+            extract_every_n=settings.champ_extract_every_n_messages,
+            min_message_length=settings.signal_trigger_min_message_length,
+            llm_classification=llm_result,
+        )
+
+        log.info(
+            "message_signal_analysis",
+            session_id=cmd.session_id,
+            msg_count=msg_count,
+            intent=signal_result.intent,
+            information_value=signal_result.information_value,
+            trigger=signal_result.should_trigger_extraction,
+            trigger_reason=signal_result.trigger_reason,
+            source=signal_result.classification_source,
+        )
+
+        # ── LAYER 2: Smart extraction trigger ───────────────────────────
+        if settings.smart_extraction_enabled:
+            should_extract = signal_result.should_trigger_extraction
+        else:
+            # Fallback: original periodic extraction
+            should_extract = (msg_count % settings.champ_extract_every_n_messages == 0)
 
         # ── LAYER 3: Max messages → force extraction (soft cap) ─────────
         force_handoff_after = False
@@ -122,6 +171,7 @@ class ConversationHandler:
             "should_instant_handoff": False,
             "force_handoff_after_extract": force_handoff_after,
             "stage": str(session.stage),
+            "signal_analysis": signal_result.to_dict(),
         }
 
     async def stream_response(
