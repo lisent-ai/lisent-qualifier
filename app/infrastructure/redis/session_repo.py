@@ -93,7 +93,10 @@ class SessionRepository:
 
     async def set_stage(self, session_id: str, stage: SessionStage) -> None:
         key = self._key(session_id)
-        await self._r.hset(key, "stage", str(stage))
+        pipe = self._r.pipeline()
+        pipe.hset(key, "stage", str(stage))
+        pipe.expire(key, self._ttl)
+        await pipe.execute()
 
     async def increment_msg_count(self, session_id: str) -> int:
         key = self._key(session_id)

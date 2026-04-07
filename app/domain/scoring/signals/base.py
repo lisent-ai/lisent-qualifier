@@ -59,3 +59,52 @@ class BuyingSignalDetector(ABC):
     def detect(self, text: str) -> list[str]:
         """Returns list of detected buying signal descriptions."""
         ...
+
+
+@dataclass(frozen=True)
+class MessageAnalysisResult:
+    """Per-message signal analysis result. Aggregates behavioral + rule-based layers."""
+
+    # Intent classification
+    intent: str  # buying_signal | info_seeking | objection | small_talk | negotiation | urgency
+    sentiment: str  # positive | neutral | negative
+    information_value: str  # high | medium | low
+
+    # Detected signals
+    buying_signals: list[str] = field(default_factory=list)
+    negative_signals: list[str] = field(default_factory=list)
+
+    # CHAMP dimensions this message touches
+    champ_dimensions: list[str] = field(default_factory=list)
+
+    # Behavioral
+    response_time_seconds: float | None = None
+    message_length: int = 0
+    is_follow_up: bool = False  # user sent another msg before we replied
+
+    # Trigger decisions
+    should_trigger_extraction: bool = False
+    trigger_reason: str = "no_trigger"
+
+    # Conversation stage context
+    conversation_stage: str = "early"  # early (1-3) | mid (4-6) | late (7+)
+
+    # Classification source
+    classification_source: str = "rules"  # groq | local_llm | rules
+
+    def to_dict(self) -> dict:
+        return {
+            "intent": self.intent,
+            "sentiment": self.sentiment,
+            "information_value": self.information_value,
+            "buying_signals": self.buying_signals,
+            "negative_signals": self.negative_signals,
+            "champ_dimensions": self.champ_dimensions,
+            "response_time_seconds": self.response_time_seconds,
+            "message_length": self.message_length,
+            "is_follow_up": self.is_follow_up,
+            "should_trigger_extraction": self.should_trigger_extraction,
+            "trigger_reason": self.trigger_reason,
+            "conversation_stage": self.conversation_stage,
+            "classification_source": self.classification_source,
+        }

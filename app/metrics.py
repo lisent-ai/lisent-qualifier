@@ -68,3 +68,11 @@ SCORING_MODE_COMPARISON = Histogram(
     "CHAMP vs Judge score delta (hybrid mode)",
     buckets=[-30, -20, -10, -5, 0, 5, 10, 20, 30],
 )
+
+# ── Instant handoff metrics ─────────────────────────────────────────────────
+
+INSTANT_HANDOFF_TRIGGERS = Counter(
+    "instant_handoff_triggers_total",
+    "Instant handoff triggers by reason",
+    ["reason"],
+)
