@@ -11,7 +11,7 @@ class LLMRequest(BaseModel):
     model: str
     messages: list[LLMMessage]
     temperature: float = 0.1
-    max_tokens: int = 1024
+    max_tokens: int = 2048
     stream: bool = False
 
 

@@ -294,7 +294,7 @@ async def llm_map(payload: dict[str, Any]) -> FieldMappingResult:
     prompt = _FIELD_MAPPING_PROMPT.format(json_payload=json_str)
 
     from app.infrastructure.llm.groq_rate_limiter import acquire
-    if not await acquire(estimated_tokens=2000, priority="field_mapping"):
+    if not await acquire(estimated_tokens=4000, priority="field_mapping"):
         log.warning("field_mapping_rate_limited")
         raise RuntimeError("Groq rate limit — field mapping skipped")
 
@@ -307,8 +307,9 @@ async def llm_map(payload: dict[str, Any]) -> FieldMappingResult:
                 {"role": "system", "content": "You are a JSON field mapper. Return ONLY valid JSON, nothing else."},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=2048,
+            max_tokens=4096,
             temperature=0,
+            response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content or "{}"
 

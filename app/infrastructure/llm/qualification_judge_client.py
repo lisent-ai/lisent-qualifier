@@ -102,23 +102,25 @@ async def run_qualification_judge(
     company_config: dict[str, Any] | None = None,
     language: str = "tr",
     sector: str = "construction",
+    model_override: str | None = None,
 ) -> QualificationJudgmentResult:
     """Single-pass qualification judgment via Groq API."""
     settings = get_settings()
     client = _get_judge_client()
+    model = model_override or settings.qualification_judge_model
     messages = _build_judge_prompt(
         conversation_text, lead_json, current_judgment_json,
         company_config, language, sector,
     )
 
     from app.infrastructure.llm.groq_rate_limiter import acquire
-    if not await acquire(estimated_tokens=3000, priority="judge"):
+    if not await acquire(estimated_tokens=6000, priority="judge"):
         raise RuntimeError("Groq rate limit — judge extraction throttled")
 
     start = time.monotonic()
     try:
         response = await client.chat.completions.create(
-            model=settings.qualification_judge_model,
+            model=model,
             messages=messages,
             max_tokens=settings.qualification_judge_max_tokens,
             temperature=0,
@@ -175,7 +177,7 @@ async def run_judge_with_self_consistency(
 
     # Reserve budget for all passes upfront
     from app.infrastructure.llm.groq_rate_limiter import acquire
-    if not await acquire(estimated_tokens=3000 * num_passes, priority="judge"):
+    if not await acquire(estimated_tokens=6000 * num_passes, priority="judge"):
         raise RuntimeError("Groq rate limit — self-consistency throttled")
 
     async def _single_pass(temp: float) -> QualificationJudgmentResult:

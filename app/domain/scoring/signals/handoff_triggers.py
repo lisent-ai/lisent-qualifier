@@ -67,6 +67,45 @@ VIP_BYPASS_EN: list[str] = [
 ]
 
 
+CONVERSATION_END_TR: list[str] = [
+    "gorusuruz",
+    "görüşürüz",
+    "hosca kalin",
+    "hoşça kalın",
+    "iyi gunler",
+    "iyi günler",
+    "iyi aksamlar",
+    "iyi akşamlar",
+    "tamam tesekkurler",
+    "tamam teşekkürler",
+    "tamamdir",
+    "tamam sagol",
+    "tamam sağol",
+    "baska sorum yok",
+    "başka sorum yok",
+    "yeterli tesekkurler",
+    "yeterli teşekkürler",
+    "ben dusuneyim",
+    "ben düşüneyim",
+    "daha sonra donerim",
+    "daha sonra dönerim",
+]
+
+CONVERSATION_END_EN: list[str] = [
+    "goodbye",
+    "bye",
+    "thanks bye",
+    "thank you bye",
+    "have a good day",
+    "no more questions",
+    "that's all",
+    "i'll think about it",
+    "i will get back to you",
+    "talk to you later",
+    "thanks for the info",
+]
+
+
 def check_instant_handoff(
     message: str, language: str = "tr"
 ) -> tuple[bool, str]:
@@ -85,5 +124,23 @@ def check_instant_handoff(
     for v in vip:
         if v in msg_lower:
             return True, f"vip_bypass:{v}"
+
+    return False, ""
+
+
+def check_conversation_end(
+    message: str, language: str = "tr"
+) -> tuple[bool, str]:
+    """Check if user is ending the conversation (goodbye, thanks, etc.).
+
+    Returns (is_ending, reason). Separate from instant handoff —
+    this triggers a force extraction + handoff with collected data.
+    """
+    msg_lower = message.lower().strip()
+
+    endings = CONVERSATION_END_TR if language == "tr" else CONVERSATION_END_EN
+    for ending in endings:
+        if ending in msg_lower:
+            return True, f"conversation_end:{ending}"
 
     return False, ""

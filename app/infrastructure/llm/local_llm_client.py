@@ -67,7 +67,7 @@ def _extract_json(text: str) -> str:
 async def _call_local_llm(
     messages: list[dict],
     timeout: float,
-    max_tokens: int = 1024,
+    max_tokens: int = 2048,
     response_format: dict | None = None,
 ) -> str:
     """Raw LLM call with circuit breaker and optional structured output."""
@@ -181,7 +181,7 @@ async def generate_reasoning_report(
     raw = await _call_local_llm(
         messages,
         timeout=float(settings.local_llm_timeout_reasoning),
-        max_tokens=1500,
+        max_tokens=3000,
     )
     json_str = _extract_json(raw)
 

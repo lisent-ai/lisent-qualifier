@@ -49,7 +49,7 @@ class SimConfig:
     # Groq
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
-    groq_max_tokens: int = 2048
+    groq_max_tokens: int = 4096
     groq_temperature: float = 0.7
 
     # Simülasyon

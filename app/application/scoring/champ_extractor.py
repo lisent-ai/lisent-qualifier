@@ -327,12 +327,28 @@ async def _extract_judge_path(
             sector=sector,
         )
     except Exception as exc:
-        log.warning("judge_extraction_failed", error=str(exc))
-        # Fallback to CHAMP if configured
-        if settings.judge_fallback_to_champ:
-            log.info("judge_fallback_to_champ")
-            return await _extract_champ_path(session, company_config, language, sector)
-        return None, None
+        log.warning("judge_extraction_failed", error=str(exc),
+                     model=settings.qualification_judge_model)
+
+        # Fallback 1: Retry with chat model (different model, same API)
+        try:
+            log.info("judge_retry_with_chat_model", model=settings.groq_model)
+            result = await run_qualification_judge(
+                conversation_text=messages_text,
+                lead_json=session.lead_json or {},
+                current_judgment_json=session.champ_json,
+                company_config=company_config,
+                language=language,
+                sector=sector,
+                model_override=settings.groq_model,
+            )
+        except Exception as exc2:
+            log.warning("judge_chat_model_fallback_failed", error=str(exc2))
+            # Fallback 2: CHAMP via local LLM (if configured + available)
+            if settings.judge_fallback_to_champ:
+                log.info("judge_fallback_to_champ")
+                return await _extract_champ_path(session, company_config, language, sector)
+            return None, None
 
     extraction_version = (
         QualificationJudgment.from_dict(session.champ_json).extraction_version + 1
