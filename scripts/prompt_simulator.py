@@ -778,9 +778,17 @@ class PromptBuilder:
             company_config=self._company_config(),
         )
 
-    def build_closing_prompt(self) -> str:
+    def build_closing_prompt(
+        self,
+        lead_json: dict | None = None,
+        messages: list[dict] | None = None,
+    ) -> str:
         from app.domain.conversation.prompts import build_handoff_closing_prompt
-        return build_handoff_closing_prompt(company_config=self._company_config())
+        return build_handoff_closing_prompt(
+            company_config=self._company_config(),
+            lead_json=lead_json,
+            messages=messages,
+        )
 
 
 # ── Scoring Engine (production pipeline — no I/O) ───────────────────────────
@@ -1293,27 +1301,42 @@ class ScoringEngine:
 
             # ── Handoff priority chain ────────────────────────────────────────
 
+            # Minimum conversation depth guard: don't allow judge/threshold
+            # handoff with fewer than 4 user messages (form data alone isn't
+            # enough to justify ending the conversation).  Force handoff
+            # (max messages, conversation end) bypasses this guard.
+            min_messages_for_handoff = 4
+            too_early = session.msg_count < min_messages_for_handoff and not force_handoff
+
             # Priority 1: Judge says ready
             if champ_json.get("handoff_ready"):
                 reason = champ_json.get("handoff_reason", "judge_decision")
-                print(f"  [HANDOFF] Judge kararı: {reason}")
-                return {
-                    "status": "handoff",
-                    "trigger": "judge_ready",
-                    "reason": reason,
-                    "score": new_score,
-                }
+                if too_early:
+                    print(f"  [GUARD] Judge handoff blocked — only {session.msg_count} msgs "
+                          f"(min {min_messages_for_handoff}). Reason: {reason}")
+                else:
+                    print(f"  [HANDOFF] Judge kararı: {reason}")
+                    return {
+                        "status": "handoff",
+                        "trigger": "judge_ready",
+                        "reason": reason,
+                        "score": new_score,
+                    }
 
             # Priority 2: Score threshold
             threshold = self.compute_threshold(session.lead_json)
             if new_score >= threshold:
-                print(f"  [HANDOFF] Threshold aşıldı: {new_score} >= {threshold}")
-                return {
-                    "status": "handoff",
-                    "trigger": "threshold",
-                    "score": new_score,
-                    "threshold": threshold,
-                }
+                if too_early:
+                    print(f"  [GUARD] Threshold handoff blocked — only {session.msg_count} msgs "
+                          f"(min {min_messages_for_handoff}). Score: {new_score} >= {threshold}")
+                else:
+                    print(f"  [HANDOFF] Threshold aşıldı: {new_score} >= {threshold}")
+                    return {
+                        "status": "handoff",
+                        "trigger": "threshold",
+                        "score": new_score,
+                        "threshold": threshold,
+                    }
 
             # Priority 3: Force handoff (max messages)
             if force_handoff:
@@ -1446,7 +1469,10 @@ class PromptSimulator:
 
         # ── 2. Closing message via Groq ───────────────────────────────────
         try:
-            closing_prompt = self.prompts.build_closing_prompt()
+            closing_prompt = self.prompts.build_closing_prompt(
+                lead_json=session.lead_json,
+                messages=session.messages,
+            )
             closing_msg = await self.groq.chat(
                 [{"role": "system", "content": closing_prompt}],
                 temperature=0.5,
@@ -1650,6 +1676,27 @@ class PromptSimulator:
                 force_handoff = True
                 print(f"  [MAX MSG] {session.msg_count} >= {self.cfg.max_messages_before_handoff}")
 
+            chat_id = f"{phone}@c.us"
+
+            # ── Run extraction + scoring BEFORE AI response ───────────────────
+            # This prevents the AI from asking a question and then immediately
+            # sending a closing message (the old bug).
+            if should_extract:
+                print(f"  [EXTRACT] Qualification judge başlatılıyor...")
+                result = await self.scoring.extract_and_score(session, force_handoff=force_handoff)
+
+                if result["status"] == "handoff":
+                    await self._handle_handoff(
+                        session,
+                        trigger=result.get("trigger", "unknown"),
+                        reason=result.get("reason", ""),
+                    )
+                    print()  # Visual separator
+                    continue  # Skip normal AI response — closing was sent
+                elif result["status"] == "scored":
+                    threshold = result.get("threshold", 75)
+                    print(f"  [STATUS] Score: {result['score']} / Threshold: {threshold} — devam")
+
             # ── Generate AI response (with updated CHAMP context) ─────────────
             system_prompt = self.prompts.build_system_prompt(
                 lead_json=session.lead_json,
@@ -1662,7 +1709,6 @@ class PromptSimulator:
                 for m in session.messages
             ]
 
-            chat_id = f"{phone}@c.us"
             await self.greenapi.send_typing(chat_id, typing_time=20000)
 
             t0 = time.time()
@@ -1676,23 +1722,7 @@ class PromptSimulator:
             session.add_message("assistant", ai_response)
             print(f"  [AI] → {phone}: {ai_response[:120]}...")
 
-            # Send WhatsApp message (non-blocking — extraction runs after send)
             await self.greenapi.send_split_message(chat_id, ai_response, groq_elapsed=groq_elapsed)
-
-            # ── Run extraction + scoring if triggered ─────────────────────────
-            if should_extract:
-                print(f"  [EXTRACT] Qualification judge başlatılıyor...")
-                result = await self.scoring.extract_and_score(session, force_handoff=force_handoff)
-
-                if result["status"] == "handoff":
-                    await self._handle_handoff(
-                        session,
-                        trigger=result.get("trigger", "unknown"),
-                        reason=result.get("reason", ""),
-                    )
-                elif result["status"] == "scored":
-                    threshold = result.get("threshold", 75)
-                    print(f"  [STATUS] Score: {result['score']} / Threshold: {threshold} — devam")
 
             print()  # Visual separator
 

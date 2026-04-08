@@ -117,7 +117,15 @@ class HandoffHandler:
 
         # ── Send closing message via Groq ────────────────────────────────────
         try:
-            closing_prompt = build_handoff_closing_prompt(company_config=company_config)
+            session_messages = [
+                {"role": m.role, "content": m.content}
+                for m in (session.messages or [])
+            ]
+            closing_prompt = build_handoff_closing_prompt(
+                company_config=company_config,
+                lead_json=lead_json,
+                messages=session_messages,
+            )
             messages = [{"role": "system", "content": closing_prompt}]
             closing_msg = await complete_chat(messages)
             log.info("groq_closing_sent", session_id=session_id, msg=closing_msg[:80])

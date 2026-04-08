@@ -284,13 +284,41 @@ def build_chat_system_prompt(
 
 # ── Handoff closing prompt ───────────────────────────────────────────────────
 
-def build_handoff_closing_prompt(company_config: dict[str, Any] | None = None) -> str:
+def build_handoff_closing_prompt(
+    company_config: dict[str, Any] | None = None,
+    lead_json: dict[str, Any] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+) -> str:
     cfg = company_config or {}
     language = cfg.get("primary_language") or "tr"
     sector = cfg.get("industry_focus") or "construction"
 
     templates = TemplateRegistry.get_templates(language, sector)
-    return templates.closing
+
+    # Extract customer name
+    customer_name = ""
+    if lead_json:
+        customer_name = lead_json.get("name") or lead_json.get("full_name") or ""
+
+    # Build recent topics summary from last few messages
+    recent_topics = ""
+    if messages:
+        recent_msgs = [
+            m["content"] for m in messages[-6:]
+            if m.get("content")
+        ]
+        recent_topics = " | ".join(recent_msgs)
+        if len(recent_topics) > 500:
+            recent_topics = recent_topics[:500]
+
+    try:
+        return templates.closing.format(
+            customer_name=customer_name or "(bilinmiyor)",
+            recent_topics=recent_topics or "(sohbet özeti yok)",
+        )
+    except (KeyError, IndexError):
+        # Fallback for templates without placeholders
+        return templates.closing
 
 
 # ── CHAMP extraction prompt ──────────────────────────────────────────────────

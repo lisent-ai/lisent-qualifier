@@ -94,6 +94,7 @@ handoff_ready=false yap:
 - Hala kritik bilgi eksikse ve lead konusmaya istekli
 - Lead sadece genel bilgi ariyorsa, somut proje yok
 - Konusma ilerleme kaydiyor, yeni bilgi geliyor her turda
+- Konusma henuz erken asamada (4'ten az kullanici mesaji) — form verisi zengin olsa bile musteri ile yeterince sohbet edilmemis demektir
 
 handoff_reason: Neden yonlendirdigin veya neden devam ettigin (1 cumle)
 
