@@ -256,8 +256,14 @@ async def _extract_champ_path(
     if not messages_for_extraction.strip():
         return None, None
 
-    prompt = _build_extraction_prompt(
-        messages_for_extraction, session.champ_json, language, sector,
+    from app.domain.conversation.prompts import build_champ_extraction_prompt
+
+    prompt = build_champ_extraction_prompt(
+        messages_for_extraction,
+        current_champ_json=session.champ_json,
+        company_config=company_config,
+        language=language,
+        sector=sector,
     )
 
     try:
@@ -439,42 +445,6 @@ def _build_extraction_messages(session) -> str:
     return "\n".join(
         f"{m.role.upper()}: {m.content}" for m in session.messages
     )
-
-
-def _build_extraction_prompt(
-    conversation_text: str,
-    current_champ_json: dict | None,
-    language: str,
-    sector: str,
-) -> str:
-    """Build the full extraction prompt with few-shot examples and current state."""
-    from app.domain.conversation.templates.registry import TemplateRegistry
-    from app.domain.conversation.few_shots.registry import FewShotRegistry
-
-    templates = TemplateRegistry.get_templates(language, sector)
-    few_shots = FewShotRegistry.get_examples(language, sector)
-
-    # Current CHAMP state section
-    current_section = ""
-    if current_champ_json:
-        current_section = (
-            f"## Mevcut CHAMP Durumu\n"
-            f"```json\n{json.dumps(current_champ_json, ensure_ascii=False, indent=2)}\n```\n"
-            f"SADECE yeni bilgi açıklanan boyutları güncelle. "
-            f"Değişmeyen boyutları mevcut skorlarında bırak.\n"
-        )
-
-    prompt = templates.extraction.format(
-        conversation_history=conversation_text,
-        current_champ_section=current_section,
-        sector_qualifiers_instruction=templates.extraction_sector_instruction,
-    )
-
-    # Prepend few-shot examples if available
-    if few_shots:
-        prompt = few_shots + "\n\n" + prompt
-
-    return prompt
 
 
 def _hours_since_last_message(messages: list) -> float:

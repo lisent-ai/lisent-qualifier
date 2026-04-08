@@ -57,6 +57,8 @@ Butunsel degerlendirme yap. Bu skor sadece 4 boyutun toplami degil — genel izl
 ### Adim 5: Eksik bilgiler ve sonraki soru
 - Hangi kritik bilgiler hala eksik?
 - Conversation'da sorulmasi gereken en onemli soru nedir?
+- recommended_next_question tek bir dogal soru olmali; sorgu gibi degil, sohbet akisina uyumlu olmali
+- thinking, reasoning, handoff_reason, missing_info ve recommended_next_question alanlarini Turkce yaz
 
 ### Adim 6: Lead Veri Zenginlestirme (extracted_* alanlari)
 Konusmadan elde ettigin bilgilerle asagidaki alanlari doldur.

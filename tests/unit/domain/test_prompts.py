@@ -5,6 +5,7 @@ from app.domain.conversation.prompts import (
     build_champ_extraction_prompt,
     build_reasoning_report_prompt,
     build_handoff_closing_prompt,
+    build_qualification_judge_prompt,
 )
 
 
@@ -34,6 +35,24 @@ def test_chat_prompt_no_champ_section_when_absent():
     lead = {"contact": {"name": "Mehmet"}}
     prompt = build_chat_system_prompt(lead, None)
     assert "CHAMP Analysis" not in prompt
+
+
+def test_chat_prompt_localizes_dynamic_sections_for_turkish():
+    lead = {"contact": {"name": "Ayse"}}
+    config = {
+        "primary_language": "tr",
+        "company_display_name": "Lisent",
+        "custom_persona": "KKTC yatirim danismani",
+        "forbidden_topics": ["vergi tavsiyesi"],
+        "faq_entries": [{"question": "Odeme nasil?", "answer": "Pesinat + taksit olabilir."}],
+        "custom_qualifying_questions": ["Daha cok yatirim icin mi bakiyorsunuz?"],
+    }
+    prompt = build_chat_system_prompt(lead, company_config=config)
+    assert "Lisent ekibinde" in prompt
+    assert "KKTC yatirim danismani" in prompt
+    assert "[EK YASAK KONULAR]" in prompt
+    assert "[ŞİRKET BİLGİ BANKASI - SSS]" in prompt
+    assert "[ÖNCELİKLİ KALİFİKASYON SORULARI]" in prompt
 
 
 def test_champ_extraction_prompt_contains_conversation():
@@ -75,4 +94,28 @@ def test_extraction_prompt_with_current_champ():
     conv = "USER: Test"
     current = {"challenges_score": 15, "authority_score": 10, "money_score": 0, "prioritization_score": 5}
     prompt = build_champ_extraction_prompt(conv, current_champ_json=current)
+    assert "Mevcut CHAMP Durumu" in prompt
+    assert "Değişmeyen boyutları mevcut skorlarında bırak." in prompt
+
+
+def test_extraction_prompt_with_current_champ_in_english():
+    conv = "USER: Test"
+    current = {"challenges_score": 15, "authority_score": 10, "money_score": 0, "prioritization_score": 5}
+    prompt = build_champ_extraction_prompt(
+        conv,
+        current_champ_json=current,
+        company_config={"primary_language": "en", "industry_focus": "construction"},
+    )
     assert "Current CHAMP State" in prompt
+    assert "Keep unchanged dimensions at their current scores." in prompt
+
+
+def test_judge_prompt_can_be_forced_to_english_without_company_config():
+    prompt = build_qualification_judge_prompt(
+        conversation_history="USER: I am looking for a villa.",
+        lead_json={"contact": {"name": "John"}},
+        language="en",
+        sector="construction",
+    )
+    assert "## Current Assessment" not in prompt
+    assert "You are an experienced construction industry lead qualification expert." in prompt

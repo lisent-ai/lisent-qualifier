@@ -48,11 +48,70 @@ _TONE_MAP_EN = {
 }
 
 
+def _is_turkish(language: str) -> bool:
+    return language.lower().strip() in ("tr", "turkish")
+
+
+def _resolve_language(cfg: dict[str, Any], language: str | None = None) -> str:
+    return (language or cfg.get("primary_language") or "tr").lower().strip()
+
+
+def _resolve_sector(cfg: dict[str, Any], sector: str | None = None) -> str:
+    return sector or cfg.get("industry_focus") or "construction"
+
+
+def _localize_sector_name(sector: str, language: str) -> str:
+    normalized = sector.lower().strip()
+    if _is_turkish(language):
+        return {
+            "construction": "inşaat ve gayrimenkul",
+            "real estate": "gayrimenkul",
+            "real_estate": "gayrimenkul",
+        }.get(normalized, sector)
+    return {
+        "insaat": "construction",
+        "inşaat": "construction",
+        "gayrimenkul": "real estate",
+    }.get(normalized, sector)
+
+
+def _build_knowledge_guard_section(language: str, kb_content: str) -> str:
+    has_verified_knowledge = bool(kb_content.strip())
+    if _is_turkish(language):
+        if has_verified_knowledge:
+            return (
+                "\n[BİLGİ KORUMA KURALI]\n"
+                "Aşağıdaki KB/RAG şirket içi doğrulanmış veri kabul edilir.\n"
+                "Proje adı, şehir, bölge, fiyat, facility, teslim tarihi, ödeme planı, stok veya karşılaştırma söyleyeceksen SADECE bu veriye dayan.\n"
+                "Bu veride olmayan hiçbir proje detayı uydurma.\n"
+            )
+        return (
+            "\n[BİLGİ KORUMA KURALI]\n"
+            "Şu anda doğrulanmış KB/RAG proje verisi yok.\n"
+            "Bu yüzden net proje adı, lokasyon, fiyat, metrekare, stok, teslim tarihi veya proje karşılaştırması verme.\n"
+            "Genel konuş, gerekiyorsa 'net örnekleri kontrol edip döneyim' de.\n"
+        )
+
+    if has_verified_knowledge:
+        return (
+            "\n[KNOWLEDGE GUARD]\n"
+            "Treat the KB/RAG section below as the only verified project data.\n"
+            "If you mention project names, locations, prices, facilities, delivery dates, payment plans, stock, or comparisons, use ONLY that verified data.\n"
+            "Do not invent any project detail outside it.\n"
+        )
+    return (
+        "\n[KNOWLEDGE GUARD]\n"
+        "There is no verified KB/RAG project data loaded right now.\n"
+        "Do not mention exact project names, locations, prices, square meters, stock, delivery dates, or project comparisons.\n"
+        "Stay general and say you can confirm the exact examples if needed.\n"
+    )
+
+
 def _compute_champ_gaps(champ_json: dict[str, Any] | None, language: str = "tr") -> str:
     # If judge provided a recommended next question, wrap with naturalness guard
     if champ_json and champ_json.get("recommended_next_question"):
         rnq = champ_json["recommended_next_question"]
-        if language in ("tr", "turkish"):
+        if _is_turkish(language):
             return f"Önerilen soru: {rnq}\nBu soruyu DOĞRUDAN sorma — doğal sohbet akışı içinde sor."
         return f"Suggested question: {rnq}\nDo NOT ask this directly — weave it naturally into the conversation."
 
@@ -84,19 +143,20 @@ def build_chat_system_prompt(
     company_config: dict[str, Any] | None = None,
 ) -> str:
     cfg = company_config or {}
-    language = cfg.get("primary_language") or "tr"
-    sector = cfg.get("industry_focus") or "construction"
+    language = _resolve_language(cfg)
+    sector = _resolve_sector(cfg)
+    turkish = _is_turkish(language)
 
     # Tone instruction
     tone = cfg.get("tone") or "professional"
-    tone_map = _TONE_MAP_TR if language == "tr" else _TONE_MAP_EN
+    tone_map = _TONE_MAP_TR if turkish else _TONE_MAP_EN
     tone_instruction = tone_map.get(tone, tone_map["professional"])
 
     # Working hours
     working_hours = cfg.get("working_hours") or ""
     working_hours_section = ""
     if working_hours:
-        if language == "tr":
+        if turkish:
             working_hours_section = (
                 f"\n[ÇALIŞMA SAATLERİ]\nŞirket çalışma saatleri: {working_hours}."
                 " Müşteri randevu veya görüşme zamanı sorarsa bu saatleri referans al.\n"
@@ -112,7 +172,7 @@ def build_chat_system_prompt(
     pricing_hints = cfg.get("pricing_hints") or ""
     pricing_hints_section = ""
     if pricing_hints:
-        if language == "tr":
+        if turkish:
             pricing_hints_section = f"\n[FİYAT İPUÇLARI - SADECE REFERANS]\n{pricing_hints}\nBu bilgiyi müşteriye doğrudan paylaşma, sadece sohbeti yönlendirmek için kullan.\n"
         else:
             pricing_hints_section = f"\n[PRICING HINTS - REFERENCE ONLY]\n{pricing_hints}\nDo not share this directly with the customer, use it only to guide the conversation.\n"
@@ -121,10 +181,11 @@ def build_chat_system_prompt(
     kb_content = cfg.get("kb_documents_content") or ""
     kb_section = ""
     if kb_content:
-        if language == "tr":
+        if turkish:
             kb_section = f"\n[ŞİRKET BİLGİ BANKASI - DÖKÜMANLAR]\n{kb_content}\n"
         else:
             kb_section = f"\n[COMPANY KNOWLEDGE BASE - DOCUMENTS]\n{kb_content}\n"
+    knowledge_guard_section = _build_knowledge_guard_section(language, kb_content)
 
     templates = TemplateRegistry.get_templates(language, sector)
 
@@ -133,25 +194,50 @@ def build_chat_system_prompt(
     champ_section = ""
     if champ_json:
         champ_context = json.dumps(champ_json, ensure_ascii=False, indent=2)
-        champ_section = f"\n\nCurrent CHAMP Analysis (JSON):\n{champ_context}\n"
+        if turkish:
+            champ_section = f"\n\nMevcut CHAMP Analizi (JSON):\n{champ_context}\n"
+        else:
+            champ_section = f"\n\nCurrent CHAMP Analysis (JSON):\n{champ_context}\n"
         # Inject holistic reasoning from judge (if available)
         if champ_json.get("holistic_reasoning"):
-            champ_section += f"\nQualification Analysis: {champ_json['holistic_reasoning']}\n"
+            label = "Kalifikasyon Analizi" if turkish else "Qualification Analysis"
+            champ_section += f"\n{label}: {champ_json['holistic_reasoning']}\n"
         if champ_json.get("icp_fit_assessment"):
-            champ_section += f"ICP Fit: {champ_json['icp_fit_assessment']}\n"
+            label = "ICP Uyumu" if turkish else "ICP Fit"
+            champ_section += f"{label}: {champ_json['icp_fit_assessment']}\n"
 
     # Company customization
     company_name = cfg.get("company_display_name") or ""
-    industry = cfg.get("industry_focus") or "construction and premium real estate"
-    persona = cfg.get("custom_persona") or "Senior Investment and Project Advisor with 10 years of expertise"
-    company_context = f" representing {company_name}" if company_name else ""
+    industry = _localize_sector_name(sector, language)
+    persona = cfg.get("custom_persona") or (
+        "10 yıllık deneyime sahip kıdemli yatırım ve proje danışmanı"
+        if turkish
+        else "Senior Investment and Project Advisor with 10 years of expertise"
+    )
+    company_context = (
+        f"{company_name} ekibinde, "
+        if company_name and turkish
+        else f" representing {company_name}"
+        if company_name
+        else ""
+    )
+    persona_instruction_section = (
+        "\nROL NOTU:\n"
+        f"- {persona} gibi düşün ve bu uzmanlık seviyesinde konuş.\n"
+        "- Bunu yaparken kısa, doğal ve insan gibi kal.\n"
+        if turkish
+        else "\nPERSONA NOTE:\n"
+        f"- Sound like {persona}.\n"
+        "- Keep that expertise while still writing like a real person.\n"
+    )
 
     # Forbidden topics
     forbidden = cfg.get("forbidden_topics") or []
     forbidden_section = ""
     if forbidden:
         forbidden_items = "\n".join(f"- {t}" for t in forbidden)
-        forbidden_section = f"\n[ADDITIONAL FORBIDDEN TOPICS]\n{forbidden_items}\n"
+        header = "EK YASAK KONULAR" if turkish else "ADDITIONAL FORBIDDEN TOPICS"
+        forbidden_section = f"\n[{header}]\n{forbidden_items}\n"
 
     # FAQ
     faq = cfg.get("faq_entries") or []
@@ -163,14 +249,16 @@ def build_chat_system_prompt(
             if isinstance(f, dict)
         )
         if faq_items:
-            faq_section = f"\n[COMPANY KNOWLEDGE BASE]\n{faq_items}\n"
+            header = "ŞİRKET BİLGİ BANKASI - SSS" if turkish else "COMPANY KNOWLEDGE BASE"
+            faq_section = f"\n[{header}]\n{faq_items}\n"
 
     # Custom qualifying questions
     custom_qs = cfg.get("custom_qualifying_questions") or []
     custom_qs_section = ""
     if custom_qs:
         qs_items = "\n".join(f"- {q}" for q in custom_qs)
-        custom_qs_section = f"\n[PRIORITY QUALIFYING QUESTIONS]\n{qs_items}\n"
+        header = "ÖNCELİKLİ KALİFİKASYON SORULARI" if turkish else "PRIORITY QUALIFYING QUESTIONS"
+        custom_qs_section = f"\n[{header}]\n{qs_items}\n"
 
     # Gap-aware instruction
     champ_gap_instruction = _compute_champ_gaps(champ_json, language)
@@ -186,8 +274,10 @@ def build_chat_system_prompt(
         faq_section=faq_section,
         custom_qs_section=custom_qs_section,
         tone_instruction=tone_instruction,
+        persona_instruction_section=persona_instruction_section,
         working_hours_section=working_hours_section,
         pricing_hints_section=pricing_hints_section,
+        knowledge_guard_section=knowledge_guard_section,
         kb_section=kb_section,
     )
 
@@ -209,10 +299,13 @@ def build_champ_extraction_prompt(
     conversation_history: str,
     current_champ_json: dict[str, Any] | None = None,
     company_config: dict[str, Any] | None = None,
+    language: str | None = None,
+    sector: str | None = None,
 ) -> str:
     cfg = company_config or {}
-    language = cfg.get("primary_language") or "tr"
-    sector = cfg.get("industry_focus") or "construction"
+    language = _resolve_language(cfg, language)
+    sector = _resolve_sector(cfg, sector)
+    turkish = _is_turkish(language)
 
     from app.domain.conversation.few_shots.registry import FewShotRegistry
 
@@ -221,9 +314,18 @@ def build_champ_extraction_prompt(
 
     current_section = ""
     if current_champ_json:
+        heading = "## Mevcut CHAMP Durumu" if turkish else "## Current CHAMP State"
+        note = (
+            "SADECE yeni bilgi gelen boyutları güncelle. "
+            "Değişmeyen boyutları mevcut skorlarında bırak.\n"
+            if turkish
+            else "Only update dimensions where new information was provided. "
+            "Keep unchanged dimensions at their current scores.\n"
+        )
         current_section = (
-            f"## Current CHAMP State\n"
+            f"{heading}\n"
             f"```json\n{json.dumps(current_champ_json, ensure_ascii=False, indent=2)}\n```\n"
+            f"{note}"
         )
 
     prompt = templates.extraction.format(
@@ -245,11 +347,13 @@ def build_qualification_judge_prompt(
     lead_json: dict[str, Any],
     current_judgment_json: dict[str, Any] | None = None,
     company_config: dict[str, Any] | None = None,
+    language: str | None = None,
+    sector: str | None = None,
 ) -> str:
     """Build the qualification judge system prompt with ICP, few-shots, current state."""
     cfg = company_config or {}
-    language = cfg.get("primary_language") or "tr"
-    sector = cfg.get("industry_focus") or "construction"
+    language = _resolve_language(cfg, language)
+    sector = _resolve_sector(cfg, sector)
 
     from app.domain.conversation.few_shots.registry import FewShotRegistry
 
@@ -260,7 +364,7 @@ def build_qualification_judge_prompt(
     few_shots = FewShotRegistry.get_judge_examples(language, sector)
 
     # ICP: company-defined or default
-    if language in ("tr", "turkish"):
+    if _is_turkish(language):
         from app.domain.conversation.templates.tr.qualification_judge import DEFAULT_ICP_TR
         default_icp = DEFAULT_ICP_TR
     else:
@@ -271,18 +375,18 @@ def build_qualification_judge_prompt(
 
     # Company context
     company_name = cfg.get("company_display_name") or ""
-    industry = cfg.get("industry_focus") or "construction"
+    industry = _localize_sector_name(sector, language)
     company_context = f"{company_name} — {industry}" if company_name else industry
 
     # Current judgment state
     current_section = ""
     if current_judgment_json:
         current_section = (
-            "## Mevcut Degerlendirme\n"
+            "## Mevcut Değerlendirme\n"
             f"```json\n{json.dumps(current_judgment_json, ensure_ascii=False, indent=2)}\n```\n"
-            "SADECE yeni bilgi eklenen boyutlari guncelle. "
-            "Degismeyen boyutlari mevcut skorlarinda birak.\n"
-        ) if language in ("tr", "turkish") else (
+            "SADECE yeni bilgi eklenen boyutları güncelle. "
+            "Değişmeyen boyutları mevcut skorlarında bırak.\n"
+        ) if _is_turkish(language) else (
             "## Current Assessment\n"
             f"```json\n{json.dumps(current_judgment_json, ensure_ascii=False, indent=2)}\n```\n"
             "Only update dimensions where new information was provided. "

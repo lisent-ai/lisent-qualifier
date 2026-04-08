@@ -1,0 +1,119 @@
+{
+  "data": {
+    "id": "80333605-ca31-40bb-a781-c123a7b8f82b",
+    "bio": "",
+    "name": "hawaii",
+    "image": "https://intranet-admin-be.s3.us-east-2.amazonaws.com/76ae35280425d44e748715751c0f4bf3.jpeg",
+    "status": "active",
+    "userId": "06a8533c-4e95-401f-912a-71b23e054d53",
+    "logoUrl": "https://intranet-admin-be.s3.us-east-2.amazonaws.com/1de7a7332cac53cb02375ebc641c3724.jpeg",
+    "currency": {
+      "id": "da70154c-5bb6-4dc6-b84c-d4a142995b84",
+      "code": "AED",
+      "name": "United Arab Emirates Dirham",
+      "symbol": "د.إ"
+    },
+    "location": "{\"location\":\"Otluk Sırtı, Balâ, Ankara, Central Anatolia Region, 06720, Turkey\",\"parameters\":[{\"lat\":40.924927332167684,\"lng\":32.93701171875001},{\"lat\":39.51569536664156,\"lng\":37.39746093750001},{\"lat\":37.69577435330179,\"lng\":31.926269531250004},{\"lat\":39.44785903194704,\"lng\":31.289062500000004}]}",
+    "createdAt": "2026-02-11T02:12:40.152Z",
+    "otherInfo": "{\"developers\":[],\"exactAreaName\":\"\",\"landSize\":\"94221332838.34\",\"deliveryDate\":\"2026-02\",\"distanceSea\":null,\"distanceCity\":null,\"distanceAirport\":null,\"distanceUniversity\":null}",
+    "priceFrom": 22114,
+    "updatedAt": "2026-04-06T16:04:27.381Z",
+    "currencyId": "da70154c-5bb6-4dc6-b84c-d4a142995b84",
+    "sortNumber": 1,
+    "projectCode": "HAWAII-2026",
+    "projectType": {
+      "id": "5e54379e-e1f2-4233-be4b-a30adfcf5140",
+      "name": "Mixed-use",
+      "description": "Buildings with residential, commercial, and/or office spaces."
+    },
+    "startedDate": "2026-01-01",
+    "projectTypeId": "5e54379e-e1f2-4233-be4b-a30adfcf5140",
+    "completionDate": "2026-12-01",
+    "organizationId": "0cceea26-0da5-45ce-b732-ac081ed0b35c",
+    "soldPercentage": "100%",
+    "totalProperties": "18",
+    "totalPaymentPlans": "10",
+    "projectFacilityInfos": [
+      {
+        "id": "2f53d1d9-a16a-4580-9f0d-f7d087013d58",
+        "name": "Swimming Pool",
+        "description": "Shared or private pool available."
+      },
+      {
+        "id": "b585fd7b-cac8-45f0-a31b-b2a4213392a9",
+        "name": "Gym / Fitness Center",
+        "description": "Fully equipped gym facility."
+      },
+      {
+        "id": "a99675f5-ab46-44bf-a394-6579decb6d1b",
+        "name": "Elevator",
+        "description": "Building with elevator access."
+      },
+      {
+        "id": "1b3eb5d6-a7d7-4d97-9591-cb2fd1301891",
+        "name": "Playground",
+        "description": "Children's play area."
+      },
+      {
+        "id": "4c7c1cbf-b7c3-43cd-81bb-3c3ce0d33282",
+        "name": "Garden",
+        "description": "Access to garden or green space."
+      },
+      {
+        "id": "8d3c30e1-d057-4227-b0ad-fc36f07e7d45",
+        "name": "Clubhouse",
+        "description": "Shared lounge or clubhouse for residents."
+      },
+      {
+        "id": "ebe7d698-c10c-44fc-850c-2a920ca57ff1",
+        "name": "BBQ Area",
+        "description": "Outdoor barbecue facilities."
+      },
+      {
+        "id": "2f3f61f9-6a12-401f-a51d-8539a434fb5f",
+        "name": "Sports Court",
+        "description": "Tennis, basketball or other sports courts."
+      },
+      {
+        "id": "66a3bb93-ff0b-44b0-993f-766152b7d29d",
+        "name": "24/7 Security",
+        "description": "Security staff or CCTV monitored."
+      },
+      {
+        "id": "a593040e-66b3-4db0-b1a2-1016a26d4fea",
+        "name": "Wi-Fi in Common Areas",
+        "description": "High-speed internet access in shared areas."
+      },
+      {
+        "id": "841f0b7a-b21e-446b-a031-c50aea4e4b00",
+        "name": "Reception / Concierge",
+        "description": "24/7 reception or concierge service."
+      },
+      {
+        "id": "48b9aac1-50b5-4200-8a4e-54d9960cd820",
+        "name": "Fireplace",
+        "description": "Fireplace available in living area."
+      },
+      {
+        "id": "915d945d-9786-4817-9712-59230a75f840",
+        "name": "Balcony",
+        "description": "Private balcony attached to unit."
+      },
+      {
+        "id": "41fa2735-ab3c-4ec0-be25-9f75a29c3077",
+        "name": "Terrace / Patio",
+        "description": "Outdoor space attached to the unit."
+      },
+      {
+        "id": "53315422-5190-479b-acec-256488ba5ebc",
+        "name": "Parking",
+        "description": "Dedicated or shared parking space."
+      }
+    ]
+  },
+  "event": "project.updated",
+  "entity": "projects",
+  "webhookId": "234b3e05-8240-4293-852f-54da86412ad8",
+  "occurredAt": "2026-04-06T16:04:28.723Z",
+  "organizationId": "0cceea26-0da5-45ce-b732-ac081ed0b35c"
+}

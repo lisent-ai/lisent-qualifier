@@ -55,6 +55,7 @@ import httpx
 # ── Proje root'unu path'e ekle ──────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+PID_FILE = PROJECT_ROOT / ".prompt_simulator.pid"
 
 
 # ── Konfigürasyon ───────────────────────────────────────────────────────────
@@ -117,12 +118,15 @@ class SimConfig:
             "purpose": "Yatırım + tatil evi",
         },
     })
+    lead_index: int = 0
 
     # Opsiyonel: company config override'ları
     working_hours: str = ""
     pricing_hints: str = ""
     kb_content: str = ""
     webhook_data_content: str = ""
+    kb_file: str = ""
+    webhook_data_file: str = ""
     forbidden_topics: list = field(default_factory=list)
     faq_entries: list = field(default_factory=list)
     custom_qualifying_questions: list = field(default_factory=list)
@@ -170,6 +174,8 @@ class SimConfig:
         cfg.pricing_hints = os.environ.get("SIM_PRICING_HINTS", "")
         cfg.kb_content = os.environ.get("SIM_KB_CONTENT", "")
         cfg.webhook_data_content = os.environ.get("SIM_WEBHOOK_DATA_CONTENT", "")
+        cfg.kb_file = os.environ.get("SIM_KB_FILE", "")
+        cfg.webhook_data_file = os.environ.get("SIM_WEBHOOK_DATA_FILE", "")
         cfg.ideal_customer_profile = os.environ.get("SIM_IDEAL_CUSTOMER_PROFILE", "")
         cfg.handoff_aggressiveness = os.environ.get("SIM_HANDOFF_AGGRESSIVENESS", "balanced")
 
@@ -230,6 +236,10 @@ class SimConfig:
             except json.JSONDecodeError:
                 cfg.custom_qualifying_questions = [q.strip() for q in cq_raw.split(",") if q.strip()]
 
+        lead_index = os.environ.get("SIM_LEAD_INDEX")
+        if lead_index:
+            cfg.lead_index = max(0, int(lead_index))
+
         # Groq ayarları
         max_tokens = os.environ.get("SIM_GROQ_MAX_TOKENS")
         if max_tokens:
@@ -251,6 +261,17 @@ class SimConfig:
         if debounce:
             cfg.debounce_seconds = float(debounce)
 
+        # Optional KB / webhook data files
+        if env_file_path is not None:
+            if cfg.kb_file:
+                loaded = _load_sim_content_file(cfg.kb_file, env_file_path)
+                if loaded:
+                    cfg.kb_content = loaded
+            if cfg.webhook_data_file:
+                loaded = _load_sim_content_file(cfg.webhook_data_file, env_file_path)
+                if loaded:
+                    cfg.webhook_data_content = loaded
+
         # Fake lead override (JSON string)
         lead_file = os.environ.get("SIM_FAKE_LEAD_FILE")
         if lead_file:
@@ -258,18 +279,113 @@ class SimConfig:
             if not lead_file_path.is_absolute() and env_file_path is not None:
                 lead_file_path = (env_file_path.parent / lead_file_path).resolve()
             try:
-                cfg.fake_lead = json.loads(lead_file_path.read_text(encoding="utf-8"))
+                loaded = json.loads(lead_file_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    selected = loaded[cfg.lead_index] if loaded else {}
+                    cfg.fake_lead = _normalize_sim_lead(selected)
+                elif isinstance(loaded, dict):
+                    cfg.fake_lead = _normalize_sim_lead(loaded)
             except (OSError, json.JSONDecodeError):
                 pass
 
         lead_json = os.environ.get("SIM_FAKE_LEAD_JSON")
         if lead_json:
             try:
-                cfg.fake_lead = json.loads(lead_json)
+                loaded = json.loads(lead_json)
+                if isinstance(loaded, dict):
+                    cfg.fake_lead = _normalize_sim_lead(loaded)
             except json.JSONDecodeError:
                 pass
 
         return cfg
+
+
+_SIM_TEST_PHONE = "34610285239"
+_RAW_FORM_SKIP_KEYS = {
+    "id", "adId", "ad_id", "adName", "ad_name", "formId", "form_id", "userId",
+    "platform", "rowIndex", "syncedAt", "createdAt", "createdTime", "created_time",
+    "updatedAt", "sheetName", "spreadsheetId", "campaignId", "campaign_id",
+    "campaignName", "campaign_name", "organizationId", "externalLeadId", "isOrganic",
+    "is_organic", "leadStatus", "adsetId", "adset_id", "adsetName", "adset_name",
+    "country", "formName", "form_name", "phone_number", "full_name", "email",
+}
+
+
+def _build_raw_payload_from_simple_lead(lead: dict[str, Any]) -> dict[str, Any]:
+    form_data = lead.get("form_data", {}) if isinstance(lead.get("form_data"), dict) else {}
+    data = {
+        "id": lead.get("lead_id", ""),
+        "full_name": lead.get("name", ""),
+        "phone_number": _SIM_TEST_PHONE,
+        "email": lead.get("email", ""),
+        "platform": lead.get("source", ""),
+        **form_data,
+    }
+    return {"data": {k: v for k, v in data.items() if v not in (None, "")}}
+
+
+def _load_sim_content_file(file_value: str, env_file_path: Path) -> str:
+    file_path = Path(file_value)
+    if not file_path.is_absolute():
+        file_path = (env_file_path.parent / file_path).resolve()
+
+    try:
+        raw = file_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+    if not raw:
+        return ""
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+    return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+
+def _extract_form_data(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    raw_data = raw_payload.get("data") if isinstance(raw_payload.get("data"), dict) else raw_payload
+    if not isinstance(raw_data, dict):
+        return {}
+    return {
+        key: value
+        for key, value in raw_data.items()
+        if value not in (None, "") and key not in _RAW_FORM_SKIP_KEYS
+    }
+
+
+def _normalize_sim_lead(record: dict[str, Any]) -> dict[str, Any]:
+    from app.infrastructure.llm.field_mapper import heuristic_map
+
+    raw_payload = record.get("raw_payload")
+    if not isinstance(raw_payload, dict):
+        raw_payload = _build_raw_payload_from_simple_lead(record)
+
+    raw_payload = json.loads(json.dumps(raw_payload, ensure_ascii=False))
+    raw_data = raw_payload.get("data")
+    if isinstance(raw_data, dict):
+        for key in ("phone_number", "phone", "mobile", "whatsapp"):
+            if key in raw_data:
+                raw_data[key] = _SIM_TEST_PHONE
+
+    mapped = heuristic_map(raw_payload)
+    form_data = _extract_form_data(raw_payload)
+
+    return {
+        "lead_id": mapped.external_id or record.get("lead_id") or form_data.get("id") or "sim-001",
+        "name": mapped.full_name or record.get("name") or form_data.get("full_name") or "Test Müşteri",
+        "phone": _SIM_TEST_PHONE,
+        "email": mapped.email or record.get("email", ""),
+        "city": mapped.city or record.get("city", ""),
+        "source": mapped.source or record.get("source", "whatsapp"),
+        "project_type": mapped.project_type or record.get("project_type", ""),
+        "budget_range": mapped.budget_range or record.get("budget_range", ""),
+        "notes": mapped.notes or record.get("notes", ""),
+        "form_data": form_data,
+        "raw_payload": raw_payload,
+    }
 
 
 # ── In-Memory Session ───────────────────────────────────────────────────────
@@ -286,6 +402,8 @@ class SimSession:
     stage: str = "QUALIFYING"  # QUALIFYING | HANDOFF
     created_at: float = field(default_factory=lambda: time.time())
     _extraction_lock: bool = False
+    last_processed_user_text: str = ""
+    last_processed_user_ts: float = 0.0
 
     def add_message(self, role: str, content: str) -> dict:
         msg = {"role": role, "content": content, "ts": time.time()}
@@ -1387,6 +1505,8 @@ class PromptSimulator:
         print(f"  Extract Every N   : {self.cfg.champ_extract_every_n}")
         print(f"  Max Messages      : {self.cfg.max_messages_before_handoff}")
         print(f"  CRM API           : {'ON → ' + self.cfg.crm_base_url if self.crm.enabled else 'OFF (statik config)'}")
+        print(f"  KB Data           : {'ON' if bool(self.cfg.kb_content.strip()) else 'OFF'}")
+        print(f"  RAG Data          : {'ON' if bool(self.cfg.webhook_data_content.strip()) else 'OFF'}")
         print(f"  Poll Aralığı      : {self.cfg.poll_interval}s")
         print(f"  Debounce          : {self.cfg.debounce_seconds}s")
         print("=" * 60)
@@ -1488,8 +1608,22 @@ class PromptSimulator:
                 print(f"  [SKIP] {phone} — zaten handoff edildi")
                 continue
 
+            # Extra guard: skip duplicate inbound content that arrives twice
+            # within a short period (e.g. duplicate webhook delivery).
+            now = time.time()
+            normalized = " ".join(combined.split()).strip().lower()
+            if (
+                normalized
+                and normalized == session.last_processed_user_text
+                and (now - session.last_processed_user_ts) < 120
+            ):
+                print(f"  [SKIP] {phone} — duplicate inbound message ignored")
+                continue
+
             # Store user message with timestamp
             session.add_message("user", combined)
+            session.last_processed_user_text = normalized
+            session.last_processed_user_ts = now
             print(f"  [PROCESS] {phone} — mesaj #{session.msg_count} (score={session.score})")
 
             # ── Message analysis + smart extraction trigger ─────────────────
@@ -1566,6 +1700,7 @@ class PromptSimulator:
 # ── Entrypoint ───────────────────────────────────────────────────────────────
 
 def main() -> None:
+    _acquire_singleton_pid()
     env_path = str(PROJECT_ROOT / ".env.simulator")
     cfg = SimConfig.from_env(env_path)
 
@@ -1596,7 +1731,60 @@ def main() -> None:
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    loop.run_until_complete(simulator.run())
+    try:
+        loop.run_until_complete(simulator.run())
+    finally:
+        _release_singleton_pid()
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if not handle:
+                return False
+            ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+            return True
+
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    except Exception:
+        return False
+    return True
+
+
+def _acquire_singleton_pid() -> None:
+    current_pid = os.getpid()
+    if PID_FILE.exists():
+        try:
+            previous_pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+        except ValueError:
+            previous_pid = 0
+
+        if previous_pid and previous_pid != current_pid and _pid_is_alive(previous_pid):
+            try:
+                os.kill(previous_pid, signal.SIGTERM)
+                time.sleep(1.0)
+            except OSError:
+                pass
+
+    PID_FILE.write_text(str(current_pid), encoding="utf-8")
+
+
+def _release_singleton_pid() -> None:
+    try:
+        if PID_FILE.exists():
+            recorded = PID_FILE.read_text(encoding="utf-8").strip()
+            if recorded == str(os.getpid()):
+                PID_FILE.unlink()
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
