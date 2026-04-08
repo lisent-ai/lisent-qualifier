@@ -25,6 +25,7 @@ from app.infrastructure.llm.groq_client import complete_chat
 from app.infrastructure.crm.webhook_client import send_to_crm
 from app.infrastructure.crm.rest_client import (
     fetch_company_ai_config,
+    fetch_company_fallback_url,
     find_or_create_customer,
     create_lead,
 )
@@ -60,6 +61,16 @@ class HandoffHandler:
         score = session.score
         champ_json = session.champ_json
         fallback_url = session.fallback_url
+
+        # ── Fallback URL safety net: session'da yoksa company config'den çek ──
+        if not fallback_url and session.company_id:
+            try:
+                fallback_url = await fetch_company_fallback_url(session.company_id)
+                if fallback_url:
+                    log.info("fallback_url_resolved_from_config",
+                             session_id=session_id, company_id=session.company_id)
+            except Exception as exc:
+                log.warning("fallback_url_resolve_failed", error=str(exc))
 
         # ── Fetch company AI config ─────────────────────────────────────────
         company_config = None

@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
     groq_timeout_seconds: int = 5
-    groq_max_tokens: int = 2048
+    groq_max_tokens: int = 4096
 
     # Local LLM
     local_llm_url: str = "http://host.docker.internal:8080"
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Qualification Judge
     qualification_judge_model: str = "llama-3.3-70b-versatile"
     qualification_judge_timeout: int = 30
-    qualification_judge_max_tokens: int = 2048
+    qualification_judge_max_tokens: int = 8192
     judge_borderline_low: int = 40
     judge_borderline_high: int = 70
     judge_self_consistency_passes: int = 3

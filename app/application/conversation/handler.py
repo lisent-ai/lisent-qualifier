@@ -15,7 +15,7 @@ from app.infrastructure.redis.score_repo import ScoreRepository
 from app.infrastructure.llm.groq_client import stream_chat
 from app.application.scoring.champ_extractor import extract_champ_task
 from app.application.conversation.commands import SendMessageCommand
-from app.domain.scoring.signals.handoff_triggers import check_instant_handoff
+from app.domain.scoring.signals.handoff_triggers import check_instant_handoff, check_conversation_end
 from app.domain.scoring.signals.message_analyzer import MessageAnalyzer
 from app.infrastructure.crm.rest_client import (
     fetch_company_kb_documents,
@@ -150,19 +150,32 @@ class ConversationHandler:
             # Fallback: original periodic extraction
             should_extract = (msg_count % settings.champ_extract_every_n_messages == 0)
 
-        # ── LAYER 3: Max messages → force extraction (soft cap) ─────────
+        # ── LAYER 2.5: Conversation end detection (goodbye → force handoff) ─
         force_handoff_after = False
-        max_msgs = (company_config or {}).get("max_messages_before_handoff", 10)
-        if msg_count >= max_msgs:
-            if not should_extract:
-                should_extract = True
+        conv_ending, conv_end_reason = check_conversation_end(cmd.content, language)
+        if conv_ending and msg_count >= 2:
+            should_extract = True
             force_handoff_after = True
             log.info(
-                "max_messages_reached",
+                "conversation_end_detected",
                 session_id=cmd.session_id,
                 msg_count=msg_count,
-                max_msgs=max_msgs,
+                reason=conv_end_reason,
             )
+
+        # ── LAYER 3: Max messages → force extraction (soft cap) ─────────
+        if not force_handoff_after:
+            max_msgs = (company_config or {}).get("max_messages_before_handoff", 10)
+            if msg_count >= max_msgs:
+                if not should_extract:
+                    should_extract = True
+                force_handoff_after = True
+                log.info(
+                    "max_messages_reached",
+                    session_id=cmd.session_id,
+                    msg_count=msg_count,
+                    max_msgs=max_msgs,
+                )
 
         return {
             "session_id": cmd.session_id,
@@ -207,7 +220,7 @@ class ConversationHandler:
                     )
                     if combined:
                         # Truncate at merge time to avoid sending huge content
-                        company_config = {**company_config, "kb_documents_content": combined[:4000]}
+                        company_config = {**company_config, "kb_documents_content": combined[:8000]}
             except Exception as exc:
                 log.warning("kb_documents_fetch_failed", error=str(exc))
 
@@ -227,7 +240,7 @@ class ConversationHandler:
                         separator = "\n\n---\n\n" if existing_kb else ""
                         company_config = {
                             **company_config,
-                            "kb_documents_content": (existing_kb + separator + webhook_combined)[:4000],
+                            "kb_documents_content": (existing_kb + separator + webhook_combined)[:8000],
                         }
             except Exception as exc:
                 log.warning("webhook_data_fetch_failed", error=str(exc))

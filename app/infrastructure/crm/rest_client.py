@@ -165,6 +165,28 @@ async def fetch_company_webhook_data(company_id: str) -> list[dict] | None:
         return []
 
 
+async def fetch_company_fallback_url(company_id: str) -> Optional[str]:
+    """
+    CRM'den company_id'ye göre qualifier fallback_url döner.
+    /internal/company/{id}/qualifier-config endpoint'ini kullanır.
+    Bulamazsa None döner.
+    """
+    try:
+        client = _get_crm_rest_client()
+        resp = await client.get(f"/internal/company/{company_id}/qualifier-config")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("fallback_url") or None
+    except RuntimeError as exc:
+        log.error("crm_rest_not_configured", error=str(exc))
+        return None
+    except Exception as exc:
+        log.warning("crm_fallback_url_fetch_failed", error=str(exc), company_id=company_id)
+        return None
+
+
 async def lookup_greenapi_by_company(company_id: str) -> Optional[dict]:
     """
     CRM'den company_id'ye göre GreenAPI credentials döner.

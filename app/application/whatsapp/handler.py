@@ -38,6 +38,7 @@ from app.infrastructure.crm.rest_client import (
     lookup_greenapi_integration,
     find_or_create_customer,
     create_lead,
+    fetch_company_fallback_url,
 )
 from app.infrastructure.greenapi.client import (
     send_whatsapp_message,
@@ -118,6 +119,7 @@ class WhatsAppMessageHandler:
                 api_token=api_token,
                 id_instance=id_instance,
                 chat_id=chat_id,
+                integration=integration,
             )
         else:
             session_id = raw_session_id.decode() if isinstance(raw_session_id, bytes) else raw_session_id
@@ -226,6 +228,7 @@ class WhatsAppMessageHandler:
                     api_token=api_token,
                     id_instance=id_instance,
                     chat_id=chat_id,
+                    integration=integration,
                 )
                 if not new_session_id:
                     return
@@ -398,6 +401,7 @@ class WhatsAppMessageHandler:
         api_token: str,
         id_instance: str,
         chat_id: str,
+        integration: dict | None = None,
     ) -> Optional[str]:
         """
         Yeni bir WhatsApp lead'i için:
@@ -407,13 +411,20 @@ class WhatsAppMessageHandler:
         NOT: CRM'de customer + lead kaydı sadece handoff sırasında oluşturulur
         (HandoffHandler). Qualify olmamış leadler Customer Directory'ye düşmez.
         """
+        # ── fallback_url: integration dict → company AI config ───────────────
+        fallback_url: str | None = None
+        if integration:
+            fallback_url = integration.get("fallback_url") or integration.get("qualifier_fallback_url")
+        if not fallback_url:
+            fallback_url = await fetch_company_fallback_url(company_id)
+
         intake_handler = ProcessWebhookLeadHandler(self._session_repo, self._score_repo)
         cmd = ProcessWebhookLeadCommand(lead_data={
             "name": sender_name or phone,
             "phone": phone,
             "source": "whatsapp",
             "notes": text,
-        }, company_id=company_id)
+        }, company_id=company_id, fallback_url=fallback_url)
         intake_result = await intake_handler.handle(cmd)
 
         if intake_result.get("status") == "fast_path":
