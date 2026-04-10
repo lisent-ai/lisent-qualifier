@@ -70,13 +70,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Start WhatsApp greeting worker
     greeting_task = asyncio.create_task(_greeting_worker())
 
+    # Start RAG queue worker (sender-chunked ingestion)
+    from app.api.webhook.router import run_rag_queue_worker
+    rag_worker_task = asyncio.create_task(run_rag_queue_worker())
+
     yield
 
     # Shutdown
     log.info("shutdown_started")
     outbox_task.cancel()
     greeting_task.cancel()
-    for task in (outbox_task, greeting_task):
+    rag_worker_task.cancel()
+    for task in (outbox_task, greeting_task, rag_worker_task):
         try:
             await task
         except asyncio.CancelledError:

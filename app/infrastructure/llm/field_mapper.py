@@ -361,7 +361,7 @@ async def map_fields(payload: dict[str, Any]) -> FieldMappingResult:
     _SKIP_KEYS = {
         "event", "entity", "webhookId", "occurredAt", "syncedAt",
         "rowIndex", "sheetName", "spreadsheetId", "updatedAt",
-        "adId", "ad_id", "adsetId", "adset_id", "formId", "form_id",
+        "adId", "ad_id", "adsetId", "adset_id",
         "campaignId", "campaign_id", "userId", "isOrganic", "is_organic",
         "createdAt", "created_time", "createdTime",
     }

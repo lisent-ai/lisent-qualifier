@@ -122,15 +122,23 @@ async def lookup_company_by_rag_token(token: str) -> Optional[dict]:
         return None
 
 
-async def store_webhook_data(company_id: str, payload: object) -> Optional[dict]:
+async def store_webhook_data(
+    company_id: str, payload: object, *, label: str = "",
+    record_id: str | None = None,
+) -> Optional[dict]:
     """
     Gelen RAG webhook verisini CRM'e kaydet.
+    record_id verilirse aynı (company_id, record_id) kaydı günceller (upsert).
     """
     try:
         client = _get_crm_rest_client()
+        body: dict = {"payload": payload, "label": label}
+        if record_id:
+            body["record_id"] = record_id
         resp = await client.post(
             f"/internal/company/{company_id}/webhook-data",
-            json={"payload": payload, "label": ""},
+            json=body,
+            timeout=30.0,
         )
         resp.raise_for_status()
         return resp.json()
@@ -139,6 +147,34 @@ async def store_webhook_data(company_id: str, payload: object) -> Optional[dict]
         return None
     except Exception as exc:
         log.error("crm_webhook_data_store_failed", error=str(exc), company_id=company_id)
+        return None
+
+
+async def bulk_store_webhook_data(
+    company_id: str, records: list[dict], *, label: str = "",
+) -> Optional[dict]:
+    """
+    Birden fazla record'u tek çağrıda upsert et (record_id bazlı).
+    records: [{"record_id": "...", "payload": {...}}, ...]
+    """
+    try:
+        client = _get_crm_rest_client()
+        bulk_records = [
+            {"record_id": r["record_id"], "payload": r, "label": label}
+            for r in records
+        ]
+        resp = await client.post(
+            f"/internal/company/{company_id}/webhook-data/bulk",
+            json={"records": bulk_records},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except RuntimeError as exc:
+        log.error("crm_rest_not_configured", error=str(exc))
+        return None
+    except Exception as exc:
+        log.error("crm_bulk_store_failed", error=str(exc), company_id=company_id)
         return None
 
 
