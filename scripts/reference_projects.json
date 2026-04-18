@@ -1,0 +1,93 @@
+[
+  {
+    "project_name": "Maldives Homes",
+    "sales_status": "sold_out",
+    "can_be_offered_for_sale": false,
+    "property_category": ["apartment", "resort_residence"],
+    "location": {
+      "city": "Bahceli",
+      "district": "Girne",
+      "region": "Northern Cyprus"
+    },
+    "completion_date": null,
+    "unit_types": [],
+    "room_types": [],
+    "views": [],
+    "positioning_tags": ["coastal", "reference_project"],
+    "notes": "Sahil kenarı resort daire projesi. Satışı tamamlandı."
+  },
+  {
+    "project_name": "Mykonos Homes",
+    "sales_status": "sold_out",
+    "can_be_offered_for_sale": false,
+    "property_category": ["apartment", "penthouse", "resort_residence"],
+    "location": {
+      "city": "Bahceli",
+      "district": "Girne",
+      "region": "Northern Cyprus"
+    },
+    "completion_date": "2023",
+    "unit_types": ["apartment", "penthouse"],
+    "room_types": ["2+1", "3+1"],
+    "features": ["balcony", "terrace", "private_pool"],
+    "indoor_facilities": ["cafe", "cinema", "indoor_pool", "turkish_bath", "sauna", "fitness_room"],
+    "outdoor_features": ["swimming_pool", "mini_golf_course", "children_playground", "landscaped_garden"],
+    "views": [],
+    "positioning_tags": ["lifestyle", "amenity_rich", "coastal", "reference_project"],
+    "notes": "Zengin sosyal donatılı sahil projesi. 2+1/3+1 daire ve penthouse. Satışı tamamlandı."
+  },
+  {
+    "project_name": "IDYLL Homes",
+    "sales_status": "sold_out",
+    "can_be_offered_for_sale": false,
+    "property_category": ["residential_development"],
+    "location": {
+      "city": "Esentepe",
+      "district": "Girne",
+      "region": "Northern Cyprus"
+    },
+    "completion_date": null,
+    "unit_types": [],
+    "room_types": [],
+    "outdoor_features": ["swimming_pool", "landscaped_garden"],
+    "views": [],
+    "positioning_tags": ["close_to_beach", "nature_aligned", "family_oriented"],
+    "notes": "Esentepe'de doğa odaklı aile konut projesi. Satışı tamamlandı."
+  },
+  {
+    "project_name": "MoonLight Villas",
+    "sales_status": "sold_out",
+    "can_be_offered_for_sale": false,
+    "property_category": ["villa"],
+    "location": {
+      "city": "Bahceli",
+      "district": "Girne",
+      "region": "Northern Cyprus"
+    },
+    "completion_date": "2024-Q4",
+    "unit_types": ["villa"],
+    "room_types": [],
+    "features": ["private_pool", "terrace", "built_in_kitchen"],
+    "views": ["sea_view"],
+    "positioning_tags": ["villa", "sea_view", "close_to_beach"],
+    "notes": "Deniz manzaralı özel havuzlu villa projesi. Satışı tamamlandı."
+  },
+  {
+    "project_name": "Pearl Island",
+    "sales_status": "sold_out",
+    "can_be_offered_for_sale": false,
+    "property_category": ["apartment", "resort_residence"],
+    "location": {
+      "city": "Esentepe",
+      "district": "Girne",
+      "region": "Northern Cyprus"
+    },
+    "completion_date": null,
+    "distance_to_sea_m": 400,
+    "unit_types": ["apartment"],
+    "room_types": ["1+0"],
+    "views": [],
+    "positioning_tags": ["coastal", "studio_focused", "investment_reference"],
+    "notes": "Esentepe'de denize 400m stüdyo daire projesi. Yatırım odaklı referans. Satışı tamamlandı."
+  }
+]

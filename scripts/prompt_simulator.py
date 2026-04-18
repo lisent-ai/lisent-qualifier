@@ -5,19 +5,19 @@ Prompt Simulator — WhatsApp üzerinden AI sohbet akışını TAM SİMÜLE eder
 Production'daki tüm katmanlar aktif:
   - Per-message LLM classification + signal analysis (Groq)
   - Smart CHAMP extraction trigger (information value based)
-  - Conversation end detection → force extract (judge karar verir)
-  - Max messages → force handoff safety net
-  - Qualification Judge (Groq) → CHAMP scores + holistic score + handoff kararı
+  - Conversation end detection -> force extract (judge karar verir)
+  - Max messages -> force handoff safety net
+  - Qualification Judge (Groq) -> CHAMP scores + holistic score + handoff kararı
   - Composite scoring (fit + qualification + engagement + sector + negative + seasonal)
   - Dynamic thresholds (project type + budget based)
-  - Gap-aware prompt routing (CHAMP gaps → chat prompt yönlendirmesi)
+  - Gap-aware prompt routing (CHAMP gaps -> chat prompt yönlendirmesi)
   - Controlled score merge (floor protection, max decrease per extraction)
   - Handoff closing message (Groq)
 
 Handoff kararı SADECE LLM judge tarafından verilir:
-  1. Judge `handoff_ready=true` derse → handoff
-  2. Composite score >= dynamic threshold → handoff
-  3. Max messages safety net → force handoff
+  1. Judge `handoff_ready=true` derse -> handoff
+  2. Composite score >= dynamic threshold -> handoff
+  3. Max messages safety net -> force handoff
 
 Devre dışı bırakılan (sadece persistence):
   - DB (PostgreSQL) — session/lead/handoff kaydı yok
@@ -42,6 +42,7 @@ Ctrl+C ile durdur.
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 import signal
@@ -90,6 +91,7 @@ class SimConfig:
     poll_interval: int = 5           # saniye — GreenAPI polling aralığı
     debounce_seconds: float = 4.0    # ardışık mesaj bekleme süresi
     split_message_delay: float = 2.5 # --- separator sonrası bekleme
+    typing_enabled: bool = True      # typing indicator + yapay gecikme
 
     # Scoring settings
     champ_extract_every_n: int = 3
@@ -127,11 +129,30 @@ class SimConfig:
     webhook_data_content: str = ""
     kb_file: str = ""
     webhook_data_file: str = ""
+    projects_file: str = ""
+    properties_file: str = ""
+    reference_projects_file: str = ""
     forbidden_topics: list = field(default_factory=list)
     faq_entries: list = field(default_factory=list)
     custom_qualifying_questions: list = field(default_factory=list)
     ideal_customer_profile: str = ""
+    priority_target_segments: list = field(default_factory=list)
+    customer_types_to_avoid: list = field(default_factory=list)
+    information_to_learn: list = field(default_factory=list)
+    core_selling_points: list = field(default_factory=list)
+    prohibited_phrases: list = field(default_factory=list)
+    payment_guidance: list = field(default_factory=list)
+    lead_handoff_signals: list = field(default_factory=list)
+    disengagement_guidelines: list = field(default_factory=list)
+    brand_tone_notes: list = field(default_factory=list)
+    trust_building_phrases: list = field(default_factory=list)
+    additional_notes: list = field(default_factory=list)
     handoff_aggressiveness: str = "balanced"
+
+    # Parsed RAG data (populated from projects_file / properties_file)
+    projects_data: dict = field(default_factory=dict)
+    properties_data: dict = field(default_factory=dict)
+    reference_projects_data: list = field(default_factory=list)
 
     # Initial fit score (0 = auto-compute disabled; let judge handle it)
     initial_fit_score: int = 40
@@ -151,7 +172,7 @@ class SimConfig:
         """Ortam değişkenlerinden veya .env.simulator dosyasından yükle."""
         env_file_path: Path | None = Path(env_path).resolve() if env_path else None
         if env_path and Path(env_path).exists():
-            for line in Path(env_path).read_text(encoding="utf-8").splitlines():
+            for line in Path(env_path).read_text(encoding="utf-8-sig").splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
@@ -176,6 +197,9 @@ class SimConfig:
         cfg.webhook_data_content = os.environ.get("SIM_WEBHOOK_DATA_CONTENT", "")
         cfg.kb_file = os.environ.get("SIM_KB_FILE", "")
         cfg.webhook_data_file = os.environ.get("SIM_WEBHOOK_DATA_FILE", "")
+        cfg.projects_file = os.environ.get("SIM_PROJECTS_FILE", "")
+        cfg.properties_file = os.environ.get("SIM_PROPERTIES_FILE", "")
+        cfg.reference_projects_file = os.environ.get("SIM_REFERENCE_PROJECTS_FILE", "")
         cfg.ideal_customer_profile = os.environ.get("SIM_IDEAL_CUSTOMER_PROFILE", "")
         cfg.handoff_aggressiveness = os.environ.get("SIM_HANDOFF_AGGRESSIVENESS", "balanced")
 
@@ -236,6 +260,30 @@ class SimConfig:
             except json.JSONDecodeError:
                 cfg.custom_qualifying_questions = [q.strip() for q in cq_raw.split(",") if q.strip()]
 
+        list_env_map = {
+            "SIM_PRIORITY_TARGET_SEGMENTS": "priority_target_segments",
+            "SIM_CUSTOMER_TYPES_TO_AVOID": "customer_types_to_avoid",
+            "SIM_INFORMATION_TO_LEARN": "information_to_learn",
+            "SIM_CORE_SELLING_POINTS": "core_selling_points",
+            "SIM_PROHIBITED_PHRASES": "prohibited_phrases",
+            "SIM_PAYMENT_GUIDANCE": "payment_guidance",
+            "SIM_LEAD_HANDOFF_SIGNALS": "lead_handoff_signals",
+            "SIM_DISENGAGEMENT_GUIDELINES": "disengagement_guidelines",
+            "SIM_BRAND_TONE_NOTES": "brand_tone_notes",
+            "SIM_TRUST_BUILDING_PHRASES": "trust_building_phrases",
+            "SIM_ADDITIONAL_NOTES": "additional_notes",
+        }
+        for env_key, attr_name in list_env_map.items():
+            raw = os.environ.get(env_key, "")
+            if not raw:
+                continue
+            try:
+                value = json.loads(raw)
+                if isinstance(value, list):
+                    setattr(cfg, attr_name, value)
+            except json.JSONDecodeError:
+                setattr(cfg, attr_name, [item.strip() for item in raw.split(",") if item.strip()])
+
         lead_index = os.environ.get("SIM_LEAD_INDEX")
         if lead_index:
             cfg.lead_index = max(0, int(lead_index))
@@ -248,6 +296,10 @@ class SimConfig:
         temperature = os.environ.get("SIM_GROQ_TEMPERATURE")
         if temperature:
             cfg.groq_temperature = float(temperature)
+
+        typing_enabled = os.environ.get("SIM_TYPING_ENABLED")
+        if typing_enabled is not None and typing_enabled != "":
+            cfg.typing_enabled = typing_enabled.lower() in ("1", "true", "yes", "on")
 
         split_delay = os.environ.get("SIM_SPLIT_MESSAGE_DELAY")
         if split_delay:
@@ -272,6 +324,25 @@ class SimConfig:
                 if loaded:
                     cfg.webhook_data_content = loaded
 
+            # Structured RAG data files (projects + properties + reference JSON)
+            for attr, file_attr in (
+                ("projects_data", "projects_file"),
+                ("properties_data", "properties_file"),
+                ("reference_projects_data", "reference_projects_file"),
+            ):
+                fpath_str = getattr(cfg, file_attr, "")
+                if fpath_str:
+                    fpath = Path(fpath_str)
+                    if not fpath.is_absolute():
+                        fpath = (env_file_path.parent / fpath).resolve()
+                    try:
+                        setattr(
+                            cfg, attr,
+                            json.loads(fpath.read_text(encoding="utf-8-sig")),
+                        )
+                    except (OSError, json.JSONDecodeError) as exc:
+                        print(f"  UYARI: {file_attr} yüklenemedi: {exc}")
+
         # Fake lead override (JSON string)
         lead_file = os.environ.get("SIM_FAKE_LEAD_FILE")
         if lead_file:
@@ -279,7 +350,7 @@ class SimConfig:
             if not lead_file_path.is_absolute() and env_file_path is not None:
                 lead_file_path = (env_file_path.parent / lead_file_path).resolve()
             try:
-                loaded = json.loads(lead_file_path.read_text(encoding="utf-8"))
+                loaded = json.loads(lead_file_path.read_text(encoding="utf-8-sig"))
                 if isinstance(loaded, list):
                     selected = loaded[cfg.lead_index] if loaded else {}
                     cfg.fake_lead = _normalize_sim_lead(selected)
@@ -330,7 +401,7 @@ def _load_sim_content_file(file_value: str, env_file_path: Path) -> str:
         file_path = (env_file_path.parent / file_path).resolve()
 
     try:
-        raw = file_path.read_text(encoding="utf-8").strip()
+        raw = file_path.read_text(encoding="utf-8-sig").strip()
     except OSError:
         return ""
 
@@ -354,6 +425,194 @@ def _extract_form_data(raw_payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in raw_data.items()
         if value not in (None, "") and key not in _RAW_FORM_SKIP_KEYS
     }
+
+
+def _normalize_text(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def _extract_block_field(block: str, labels: tuple[str, ...]) -> str:
+    for line in block.splitlines():
+        stripped = line.strip()
+        for label in labels:
+            prefix = f"- {label}:"
+            if stripped.startswith(prefix):
+                return stripped.split(":", 1)[1].strip()
+    return ""
+
+
+def _extract_block_title(block: str) -> str:
+    first_line = block.splitlines()[0].strip() if block.splitlines() else ""
+    return first_line.removeprefix("## ").strip()
+
+
+def _build_match_reason(project_type: str, purpose: str, preferred_location: str, block_text: str) -> str:
+    reasons: list[str] = []
+    if "villa" in project_type and "villa" in block_text:
+        reasons.append("villa tipiyle uyumlu")
+    if any(token in project_type for token in ("daire", "rezidans", "apartment", "penthouse")) and any(
+        token in block_text for token in ("daire", "rezidans", "apartment", "penthouse")
+    ):
+        reasons.append("daire tarafına yakın")
+    if any(token in project_type for token in ("havuz", "pool")) and any(
+        token in block_text for token in ("havuz", "pool")
+    ):
+        reasons.append("havuz beklentisine yakın")
+    if any(token in project_type for token in ("deniz", "manzara", "sea", "view")) and any(
+        token in block_text for token in ("deniz", "manzara", "sea", "view")
+    ):
+        reasons.append("deniz tarafı beklentisine yakın")
+    if any(token in purpose for token in ("yatırım", "yatirim", "investment", "kira")) and any(
+        token in block_text for token in ("yatırım", "yatirim", "investment", "kira")
+    ):
+        reasons.append("yatırım odağına uyuyor")
+    if preferred_location and preferred_location in block_text:
+        reasons.append("lokasyon sinyaliyle eşleşiyor")
+    return ", ".join(reasons[:3])
+
+
+def _compact_whatsapp_text(text: str) -> str:
+    compact = text.replace("**", "").replace("__", "").replace("  \n", "\n")
+    compact = re.sub(r"[ \t]+", " ", compact)
+    compact = re.sub(r"\n{3,}", "\n\n", compact)
+    return compact.strip()
+
+
+def _build_matched_projects_section(lead_json: dict[str, Any], kb_text: str, language: str) -> str:
+    if not kb_text.strip():
+        return ""
+
+    form_data = lead_json.get("form_data") if isinstance(lead_json.get("form_data"), dict) else {}
+    project_type = _normalize_text(str(
+        lead_json.get("project_type")
+        or form_data.get("what_type_of_property_are_you_interested_in?", "")
+        or form_data.get("what_type_of_property_are_you_interested_in", "")
+    ))
+    budget = _normalize_text(str(
+        lead_json.get("budget_range")
+        or form_data.get("what_is_your_budget_range?", "")
+        or form_data.get("what_is_your_budget_range", "")
+    ))
+    purpose = _normalize_text(str(
+        form_data.get("why_are_you_interested_in_north_cyprus?", "")
+        or form_data.get("why_are_you_interested_in_north_cyprus", "")
+        or form_data.get("purpose", "")
+        or lead_json.get("notes", "")
+    ))
+    preferred_location = _normalize_text(str(
+        form_data.get("preferred_location", "")
+        or lead_json.get("city", "")
+    ))
+
+    chunks = [chunk.strip() for chunk in kb_text.split("\n\n## ") if chunk.strip()]
+    if kb_text.startswith("## "):
+        project_blocks = [chunk for chunk in chunks if chunk.lower().startswith(("seaside", "kyrenia", "karpaz"))]
+    else:
+        project_blocks = [
+            ("## " + chunk) if not chunk.startswith("## ") else chunk
+            for chunk in chunks
+            if not chunk.lower().startswith("# şirket proje portföyü")
+        ]
+
+    scored: list[tuple[int, str]] = []
+    for block in project_blocks:
+        text = _normalize_text(block)
+        score = 0
+        if "villa" in project_type and "villa" in text:
+            score += 4
+        if "müstakil" in project_type or "mustakil" in project_type:
+            if "villa" in text:
+                score += 3
+        if any(token in project_type for token in ("daire", "rezidans", "apartment", "penthouse")) and any(
+            token in text for token in ("daire", "rezidans", "apartment", "penthouse")
+        ):
+            score += 4
+        if any(token in project_type for token in ("tatil", "bungalov", "holiday")) and any(
+            token in text for token in ("tatil", "bungalov", "holiday")
+        ):
+            score += 3
+        if "4+1" in project_type and "4+1" in text:
+            score += 2
+        if "3+1" in project_type and "3+1" in text:
+            score += 2
+        if "havuz" in project_type and "havuz" in text:
+            score += 3
+        if any(token in project_type for token in ("deniz", "manzara", "sea", "view")) and any(
+            token in text for token in ("deniz", "manzara", "sea", "view")
+        ):
+            score += 2
+        if "yatırım" in purpose or "investment" in purpose:
+            if "yatırım" in text or "kira" in text or "yüksek kira" in text:
+                score += 3
+        if "tatil" in purpose and any(token in text for token in ("tatil", "marina", "sakin")):
+            score += 2
+        if preferred_location and preferred_location in text:
+            score += 4
+        if "esentepe" in text and ("villa" in project_type or "havuz" in project_type):
+            score += 2
+        if "girne" in preferred_location and "girne" in text:
+            score += 2
+        if budget:
+            if "500" in budget and "950" in text:
+                score += 2
+            if "350" in budget and "350" in text:
+                score += 2
+            if "250" in budget and "450" in text:
+                score += 2
+        scored.append((score, block))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_block = scored[0] if scored else (0, "")
+    if not best_block:
+        return ""
+
+    if best_score <= 0:
+        if language.lower().strip() in ("tr", "turkish"):
+            return (
+                "[BU LEAD İÇİN UYGUN PROJELER]\n"
+                "- Net bir birebir proje eşleşmesi görünmüyor.\n"
+                "- Proje uydurma. Önce amaç, bölge ve bütçe sinyalini biraz daha netleştir.\n"
+            )
+        return (
+            "[BEST MATCHING PROJECTS FOR THIS LEAD]\n"
+            "- There is no clear project match yet.\n"
+            "- Do not invent a project. Clarify purpose, location, and budget first.\n"
+        )
+
+    title = _extract_block_title(best_block)
+    location = _extract_block_field(best_block, ("Lokasyon", "Location"))
+    price = _extract_block_field(best_block, ("Başlangıç Fiyatı", "Starting Price"))
+    facilities = _extract_block_field(best_block, ("Tesisler", "Facilities"))
+    feature_list = [item.strip() for item in facilities.split(",") if item.strip()]
+    short_features = ", ".join(feature_list[:2])
+    reason = _build_match_reason(project_type, purpose, preferred_location, _normalize_text(best_block))
+
+    if language.lower().strip() in ("tr", "turkish"):
+        lines = ["[BU LEAD İÇİN UYGUN PROJELER]"]
+        lines.append(f"- En yakın proje: {title}")
+        if location:
+            lines.append(f"- Lokasyon: {location}")
+        if short_features:
+            lines.append(f"- Kısa anlatımda kullan: {short_features}")
+        if reason:
+            lines.append(f"- Uyum nedeni: {reason}")
+        if price:
+            lines.append(f"- Fiyat bilgisi (yalnızca sorarsa): {price}")
+        lines.append("- Kural: tek seferde sadece 1 proje ve en fazla 1-2 özellik söyle.")
+        return "\n".join(lines)
+
+    lines = ["[BEST MATCHING PROJECTS FOR THIS LEAD]"]
+    lines.append(f"- Best project: {title}")
+    if location:
+        lines.append(f"- Location: {location}")
+    if short_features:
+        lines.append(f"- Use in short pitch: {short_features}")
+    if reason:
+        lines.append(f"- Why it fits: {reason}")
+    if price:
+        lines.append(f"- Price (only if asked): {price}")
+    lines.append("- Rule: mention only one project and keep it to 1-2 key features.")
+    return "\n".join(lines)
 
 
 def _normalize_sim_lead(record: dict[str, Any]) -> dict[str, Any]:
@@ -402,6 +661,7 @@ class SimSession:
     stage: str = "QUALIFYING"  # QUALIFYING | HANDOFF
     created_at: float = field(default_factory=lambda: time.time())
     _extraction_lock: bool = False
+    _pending_handoff: dict | None = None  # Deferred handoff after answering question
     last_processed_user_text: str = ""
     last_processed_user_ts: float = 0.0
 
@@ -449,6 +709,7 @@ class GreenAPIClient:
         self.api_token = cfg.greenapi_api_token
         self.base_url = cfg.greenapi_base_url.rstrip("/")
         self.split_delay = cfg.split_message_delay
+        self.typing_enabled = cfg.typing_enabled
         self._client = httpx.AsyncClient(timeout=15)
 
     def _url(self, method: str) -> str:
@@ -479,7 +740,7 @@ class GreenAPIClient:
                 json={"chatId": chat_id, "message": message},
             )
             if resp.status_code == 200:
-                print(f"  [SENT] → {chat_id}: {message[:80]}...")
+                print(f"  [SENT] -> {chat_id}: {message[:80]}...")
                 return True
             print(f"  [WARN] GreenAPI send {resp.status_code}: {resp.text[:100]}")
             return False
@@ -488,13 +749,15 @@ class GreenAPIClient:
             return False
 
     async def send_typing(self, chat_id: str, typing_time: int = 15000) -> None:
+        if not self.typing_enabled:
+            return
         try:
             resp = await self._client.post(
                 self._url("sendTyping"),
                 json={"chatId": chat_id, "typingTime": typing_time},
             )
             if resp.status_code == 200:
-                print(f"  [TYPING] → {chat_id}")
+                print(f"  [TYPING] -> {chat_id}")
         except Exception:
             pass
 
@@ -503,23 +766,51 @@ class GreenAPIClient:
     ) -> None:
         from app.infrastructure.greenapi.client import compute_typing_delay
 
-        parts = ai_response.split("---", 1)
+        ai_response = _compact_whatsapp_text(ai_response)
+        parts = ai_response.split("---")
         parts = [p.strip() for p in parts if p.strip()]
 
-        if len(parts) == 2:
-            delay_p1 = compute_typing_delay(parts[0])
-            remaining = max(0, delay_p1 - groq_elapsed)
-            if remaining > 0:
-                await asyncio.sleep(remaining)
-            await self.send_message(chat_id, parts[0])
+        if len(parts) == 1:
+            text = parts[0] if parts else ai_response.replace("---", "").strip()
+            if len(text) > 150:
+                sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+                rebuilt: list[str] = []
+                current = ""
+                for sentence in sentences:
+                    candidate = sentence.strip()
+                    if not current:
+                        current = candidate
+                        continue
+                    if len(current) + 1 + len(candidate) <= 140:
+                        current = current + " " + candidate
+                    else:
+                        rebuilt.append(current.strip())
+                        current = candidate
+                if current:
+                    rebuilt.append(current.strip())
+                if len(rebuilt) >= 2:
+                    parts = rebuilt[:2]
 
-            delay_p2 = compute_typing_delay(parts[1])
-            await self.send_typing(chat_id, typing_time=int(min(delay_p2 * 1000, 20000)))
-            await asyncio.sleep(delay_p2)
-            await self.send_message(chat_id, parts[1])
+        if len(parts) >= 2:
+            parts = parts[:2]
+            for index, part in enumerate(parts):
+                delay = compute_typing_delay(part) if self.typing_enabled else 0.0
+                if index == 0:
+                    remaining = max(0, delay - groq_elapsed)
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                else:
+                    if self.typing_enabled:
+                        await self.send_typing(chat_id, typing_time=int(min(delay * 1000, 20000)))
+                    wait_time = self.split_delay if self.split_delay > 0 else 0.0
+                    if self.typing_enabled:
+                        wait_time = max(wait_time, delay)
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                await self.send_message(chat_id, part)
         else:
             text = ai_response.replace("---", "").strip()
-            delay = compute_typing_delay(text)
+            delay = compute_typing_delay(text) if self.typing_enabled else 0.0
             remaining = max(0, delay - groq_elapsed)
             if remaining > 0:
                 await asyncio.sleep(remaining)
@@ -716,23 +1007,89 @@ class PromptBuilder:
             await self.crm.fetch_kb_content()
             await self.crm.fetch_webhook_data_content()
 
-    def _company_config(self) -> dict:
-        # Start with simulator static config
-        kb = self.cfg.kb_content
-        if self.cfg.webhook_data_content:
-            kb = (kb + "\n\n---\n\n" + self.cfg.webhook_data_content) if kb else self.cfg.webhook_data_content
+    def _company_config(
+        self,
+        lead_json: dict | None = None,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> dict:
+        from app.domain.knowledge.project_transformer import (
+            transform_webhook_entries,
+            transform_rag_portfolio,
+            build_rag_matched_section,
+            transform_reference_projects,
+            extract_all_project_names,
+        )
+        from app.domain.conversation.prompts import resolve_buyer_segment
 
-        # Merge CRM KB + webhook data (production behavior)
-        crm_kb = self.crm._kb_cache if self.crm.enabled else ""
-        crm_webhook = self.crm._webhook_data_cache if self.crm.enabled else ""
-        if crm_kb:
-            kb = (kb + "\n\n---\n\n" + crm_kb) if kb else crm_kb
-        if crm_webhook:
-            kb = (kb + "\n\n---\n\n" + crm_webhook) if kb else crm_webhook
+        effective_lead = lead_json or self.cfg.fake_lead
 
-        # Truncate total KB at 8000 chars (production behavior)
-        if kb and len(kb) > 8000:
-            kb = kb[:8000]
+        # ── Structured RAG path (projects.json + properties.json) ──
+        if self.cfg.projects_data and self.cfg.properties_data:
+            kb = transform_rag_portfolio(
+                self.cfg.projects_data,
+                self.cfg.properties_data,
+                self.cfg.language,
+            )
+            # Merge static KB content (area knowledge, company info)
+            if self.cfg.kb_content:
+                kb = self.cfg.kb_content + "\n\n" + kb
+
+            matched_projects_section = build_rag_matched_section(
+                effective_lead,
+                self.cfg.projects_data,
+                self.cfg.properties_data,
+                self.cfg.language,
+                messages=messages,
+            )
+        else:
+            # ── Legacy path (webhook_data + kb_content) ──
+            kb = self.cfg.kb_content
+
+            if self.cfg.webhook_data_content:
+                try:
+                    raw = json.loads(self.cfg.webhook_data_content)
+                    transformed = transform_webhook_entries(raw, self.cfg.language)
+                    if transformed:
+                        kb = (kb + "\n\n---\n\n" + transformed) if kb else transformed
+                except (json.JSONDecodeError, TypeError):
+                    kb = (kb + "\n\n---\n\n" + self.cfg.webhook_data_content) if kb else self.cfg.webhook_data_content
+
+            # Merge CRM KB + webhook data (production behavior)
+            crm_kb = self.crm._kb_cache if self.crm.enabled else ""
+            crm_webhook = self.crm._webhook_data_cache if self.crm.enabled else ""
+            if crm_kb:
+                kb = (kb + "\n\n---\n\n" + crm_kb) if kb else crm_kb
+            if crm_webhook:
+                try:
+                    raw = json.loads(crm_webhook)
+                    transformed = transform_webhook_entries(raw, self.cfg.language)
+                    if transformed:
+                        kb = (kb + "\n\n---\n\n" + transformed) if kb else transformed
+                except (json.JSONDecodeError, TypeError):
+                    kb = (kb + "\n\n---\n\n" + crm_webhook) if kb else crm_webhook
+
+            matched_projects_section = _build_matched_projects_section(
+                effective_lead, kb, self.cfg.language,
+            )
+
+        # Append reference (sold-out) projects to KB
+        if self.cfg.reference_projects_data:
+            ref_section = transform_reference_projects(
+                self.cfg.reference_projects_data, self.cfg.language,
+            )
+            if ref_section:
+                kb = (kb + "\n\n" + ref_section) if kb else ref_section
+
+        # Collect all known project names for mention detection
+        known_names = extract_all_project_names(
+            self.cfg.projects_data or None,
+            self.cfg.reference_projects_data or None,
+        )
+
+        # Truncate total KB at 10000 chars (increased for reference section)
+        if kb and len(kb) > 10000:
+            kb = kb[:10000]
+        buyer_segment = resolve_buyer_segment(effective_lead, messages, self.cfg.language)
 
         base = {
             "primary_language": self.cfg.language,
@@ -743,10 +1100,24 @@ class PromptBuilder:
             "working_hours": self.cfg.working_hours,
             "pricing_hints": self.cfg.pricing_hints,
             "kb_documents_content": kb,
+            "known_project_names": known_names,
+            "matched_projects_section": matched_projects_section,
+            "buyer_segment": buyer_segment,
             "forbidden_topics": self.cfg.forbidden_topics,
             "faq_entries": self.cfg.faq_entries,
             "custom_qualifying_questions": self.cfg.custom_qualifying_questions,
             "ideal_customer_profile": self.cfg.ideal_customer_profile,
+            "priority_target_segments": self.cfg.priority_target_segments,
+            "customer_types_to_avoid": self.cfg.customer_types_to_avoid,
+            "information_to_learn": self.cfg.information_to_learn,
+            "core_selling_points": self.cfg.core_selling_points,
+            "prohibited_phrases": self.cfg.prohibited_phrases,
+            "payment_guidance": self.cfg.payment_guidance,
+            "lead_handoff_signals": self.cfg.lead_handoff_signals,
+            "disengagement_guidelines": self.cfg.disengagement_guidelines,
+            "brand_tone_notes": self.cfg.brand_tone_notes,
+            "trust_building_phrases": self.cfg.trust_building_phrases,
+            "additional_notes": self.cfg.additional_notes,
             "handoff_aggressiveness": self.cfg.handoff_aggressiveness,
         }
 
@@ -756,6 +1127,12 @@ class PromptBuilder:
                         "company_display_name", "custom_persona", "working_hours",
                         "pricing_hints", "forbidden_topics", "faq_entries",
                         "custom_qualifying_questions", "ideal_customer_profile",
+                        "priority_target_segments", "customer_types_to_avoid",
+                        "information_to_learn", "core_selling_points",
+                        "prohibited_phrases", "payment_guidance",
+                        "lead_handoff_signals", "disengagement_guidelines",
+                        "brand_tone_notes", "trust_building_phrases",
+                        "additional_notes",
                         "handoff_aggressiveness", "scoring_weights",
                         "max_messages_before_handoff", "qualification_threshold",
                         "scoring_mode"):
@@ -764,9 +1141,19 @@ class PromptBuilder:
 
         return base
 
-    def build_system_prompt(self, lead_json: dict, champ_json: dict | None = None) -> str:
+    def build_system_prompt(
+        self,
+        lead_json: dict,
+        champ_json: dict | None = None,
+        messages: list[dict] | None = None,
+    ) -> str:
         from app.domain.conversation.prompts import build_chat_system_prompt
-        return build_chat_system_prompt(lead_json, champ_json, self._company_config())
+        return build_chat_system_prompt(
+            lead_json,
+            champ_json,
+            self._company_config(lead_json, messages),
+            messages=messages,
+        )
 
     def build_judge_prompt(self, conversation_text: str, lead_json: dict,
                            current_judgment_json: dict | None = None) -> str:
@@ -775,7 +1162,7 @@ class PromptBuilder:
             conversation_history=conversation_text,
             lead_json=lead_json,
             current_judgment_json=current_judgment_json,
-            company_config=self._company_config(),
+            company_config=self._company_config(lead_json),
         )
 
     def build_closing_prompt(
@@ -785,7 +1172,7 @@ class PromptBuilder:
     ) -> str:
         from app.domain.conversation.prompts import build_handoff_closing_prompt
         return build_handoff_closing_prompt(
-            company_config=self._company_config(),
+            company_config=self._company_config(lead_json),
             lead_json=lead_json,
             messages=messages,
         )
@@ -1119,7 +1506,7 @@ class ScoringEngine:
         if champ_json.get("holistic_score"):
             print(f"    holistic={champ_json['holistic_score']}, eng_boost={int(eng_result.score*0.10)}")
         print(f"    raw_weighted={result.raw_weighted:.1f}, confidence_mult={result.confidence_multiplier:.3f}")
-        print(f"    final={result.final_score} → controlled_merge → {new_score} (floor={score_floor})")
+        print(f"    final={result.final_score} -> controlled_merge -> {new_score} (floor={score_floor})")
 
         if eng_result.details:
             print(f"    engagement: {', '.join(eng_result.details)}")
@@ -1297,16 +1684,23 @@ class ScoringEngine:
             if champ_json.get("recommended_next_question"):
                 print(f"  [GAP] Önerilen soru: {champ_json['recommended_next_question'][:100]}")
 
-            print(f"  [SCORE] {old_score} → {new_score}")
+            print(f"  [SCORE] {old_score} -> {new_score}")
 
             # ── Handoff priority chain ────────────────────────────────────────
 
             # Minimum conversation depth guard: don't allow judge/threshold
-            # handoff with fewer than 4 user messages (form data alone isn't
-            # enough to justify ending the conversation).  Force handoff
-            # (max messages, conversation end) bypasses this guard.
-            min_messages_for_handoff = 4
+            # handoff with fewer than 6 user messages. Ensures the customer
+            # had a real conversation and their questions were answered before
+            # handing off. Force handoff (max messages, conversation end)
+            # bypasses this guard.
+            min_messages_for_handoff = 6
             too_early = session.msg_count < min_messages_for_handoff and not force_handoff
+            judge_missing = champ_json.get("missing_info") or []
+            critical_missing = {"amaç", "kullanim", "kullanım", "bütçe", "butce", "zaman", "zamanlama", "karar"}
+            has_critical_missing = any(
+                any(token in str(item).lower() for token in critical_missing)
+                for item in judge_missing
+            )
 
             # Priority 1: Judge says ready
             if champ_json.get("handoff_ready"):
@@ -1314,6 +1708,8 @@ class ScoringEngine:
                 if too_early:
                     print(f"  [GUARD] Judge handoff blocked — only {session.msg_count} msgs "
                           f"(min {min_messages_for_handoff}). Reason: {reason}")
+                elif has_critical_missing:
+                    print(f"  [GUARD] Judge handoff blocked — critical missing info: {judge_missing}")
                 else:
                     print(f"  [HANDOFF] Judge kararı: {reason}")
                     return {
@@ -1329,6 +1725,8 @@ class ScoringEngine:
                 if too_early:
                     print(f"  [GUARD] Threshold handoff blocked — only {session.msg_count} msgs "
                           f"(min {min_messages_for_handoff}). Score: {new_score} >= {threshold}")
+                elif has_critical_missing:
+                    print(f"  [GUARD] Threshold handoff blocked — critical missing info: {judge_missing}")
                 else:
                     print(f"  [HANDOFF] Threshold aşıldı: {new_score} >= {threshold}")
                     return {
@@ -1408,6 +1806,7 @@ class PromptSimulator:
         system_prompt = self.prompts.build_system_prompt(
             lead_json=session.lead_json,
             champ_json=None,
+            messages=[],
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -1424,7 +1823,7 @@ class PromptSimulator:
         groq_elapsed = time.time() - t0
 
         session.add_message("assistant", ai_response)
-        print(f"  [AI] → {phone}: {ai_response[:120]}...")
+        print(f"  [AI] -> {phone}: {ai_response[:120]}...")
 
         await self.greenapi.send_split_message(chat_id, ai_response, groq_elapsed=groq_elapsed)
         print(f"  [GREETING] İlk mesaj gönderildi. Yanıt bekleniyor...\n")
@@ -1478,9 +1877,10 @@ class PromptSimulator:
                 temperature=0.5,
             )
             await self.greenapi.send_typing(chat_id, typing_time=10000)
-            await asyncio.sleep(2)
+            if self.cfg.typing_enabled and self.cfg.split_message_delay > 0:
+                await asyncio.sleep(self.cfg.split_message_delay)
             await self.greenapi.send_message(chat_id, closing_msg.replace("---", "").strip())
-            print(f"  [CLOSING] → {session.phone}: {closing_msg[:100]}...")
+            print(f"  [CLOSING] -> {session.phone}: {closing_msg[:100]}...")
         except Exception as exc:
             print(f"  [WARN] Closing message hatası: {exc}")
 
@@ -1511,6 +1911,7 @@ class PromptSimulator:
         print(f"{'='*60}\n")
 
     async def run(self) -> None:
+        from app.domain.conversation.prompts import resolve_buyer_segment
         target_phone = self.cfg.fake_lead.get("phone", "")
 
         print("=" * 60)
@@ -1522,26 +1923,35 @@ class PromptSimulator:
         print(f"  Classify Model    : {self.cfg.classify_model}")
         print(f"  Dil / Sektör      : {self.cfg.language} / {self.cfg.sector}")
         print(f"  Şirket            : {self.cfg.company_name}")
+        print(f"  Persona           : {self.cfg.persona}")
         print(f"  Ton               : {self.cfg.tone}")
         print(f"  Hedef Telefon     : {target_phone or '(yok — pasif mod)'}")
+        print(f"  Lead Index        : {self.cfg.lead_index}")
         print(f"  Initial Fit Score : {self.cfg.initial_fit_score}")
         print(f"  Aggressiveness    : {self.cfg.handoff_aggressiveness}")
         print(f"  Smart Extraction  : {'ON' if self.cfg.smart_extraction_enabled else 'OFF'}")
         print(f"  Self-Consistency  : borderline [{self.cfg.judge_borderline_low}-{self.cfg.judge_borderline_high}]")
         print(f"  Extract Every N   : {self.cfg.champ_extract_every_n}")
         print(f"  Max Messages      : {self.cfg.max_messages_before_handoff}")
-        print(f"  CRM API           : {'ON → ' + self.cfg.crm_base_url if self.crm.enabled else 'OFF (statik config)'}")
+        print(f"  CRM API           : {'ON -> ' + self.cfg.crm_base_url if self.crm.enabled else 'OFF (statik config)'}")
         print(f"  KB Data           : {'ON' if bool(self.cfg.kb_content.strip()) else 'OFF'}")
         print(f"  RAG Data          : {'ON' if bool(self.cfg.webhook_data_content.strip()) else 'OFF'}")
         print(f"  Poll Aralığı      : {self.cfg.poll_interval}s")
         print(f"  Debounce          : {self.cfg.debounce_seconds}s")
+        print(f"  Typing            : {'ON' if self.cfg.typing_enabled else 'OFF'}")
+        print(f"  Split Delay       : {self.cfg.split_message_delay}s")
         print("=" * 60)
 
         # CRM'den KB docs, webhook data, company config yükle (varsa)
         await self.prompts.init()
+        current_cfg = self.prompts._company_config(self.cfg.fake_lead)
+        matched = current_cfg.get("matched_projects_section", "")
+        buyer_segment = current_cfg.get("buyer_segment") or resolve_buyer_segment(self.cfg.fake_lead, None, self.cfg.language)
+        print(f"  Matched Projects  : {'ON' if bool(str(matched).strip()) else 'OFF'}")
+        print(f"  Buyer Segment     : {buyer_segment}")
 
         if target_phone:
-            print(f"  Form simülasyonu başlatılıyor → {target_phone}\n")
+            print(f"  Form simülasyonu başlatılıyor -> {target_phone}\n")
             await self._send_greeting(target_phone)
         else:
             print("  WhatsApp'tan mesaj bekleniyor... (Ctrl+C ile durdur)\n")
@@ -1686,13 +2096,49 @@ class PromptSimulator:
                 result = await self.scoring.extract_and_score(session, force_handoff=force_handoff)
 
                 if result["status"] == "handoff":
-                    await self._handle_handoff(
-                        session,
-                        trigger=result.get("trigger", "unknown"),
-                        reason=result.get("reason", ""),
+                    # ── Pending-question guard ─────────────────────────────────
+                    # If the customer's last message is a question or request,
+                    # answer it first via normal AI response, then handoff next turn.
+                    _last_user_text = combined.lower().strip()
+                    _has_pending_question = (
+                        "?" in combined
+                        or _last_user_text.rstrip().endswith(("mı", "mi", "mu", "mü"))
+                        # Engagement signals — user is still active, don't handoff
+                        or any(token in _last_user_text for token in (
+                            ":d", ":D", ":)", "😄", "😊", "haha", "hehe",
+                            "güzel", "iyimiş", "süper",
+                            "göreyim", "goreyim", "düşüneyim", "dusuneyim",
+                            "bakarım", "bakarim", "sonra", "bi bakayım",
+                        ))
+                        or any(token in _last_user_text for token in (
+                            "nasıl", "nasil", "nedir", "ne kadar", "var mı", "var mi",
+                            "önerir", "onerir", "bilgi", "seçenek", "secenek",
+                            "projeleriniz", "neleriniz", "göster", "goster",
+                            "ne önerirsiniz", "ne onerirsiniz", "hakkında",
+                            "fiyat", "ödeme", "odeme", "ne gibi", "hangisi",
+                            "yoksa", "yok mu",
+                            "alabilir mi", "verir mi", "söyler mi", "soyler mi",
+                            "bak bakalım", "bir bak", "kontrol et", "bakar mısın",
+                            "bakar misin", "başka", "baska", "daha var",
+                            "daha uygun", "daha ucuz", "alternatif",
+                        ))
                     )
-                    print()  # Visual separator
-                    continue  # Skip normal AI response — closing was sent
+                    if _has_pending_question:
+                        print(f"  [GUARD] Handoff ertelendi — müşterinin açık sorusu var. "
+                              f"Önce cevap verilecek, sonraki turda handoff.")
+                        session._pending_handoff = {
+                            "trigger": result.get("trigger", "unknown"),
+                            "reason": result.get("reason", ""),
+                        }
+                        # Fall through to normal AI response below
+                    else:
+                        await self._handle_handoff(
+                            session,
+                            trigger=result.get("trigger", "unknown"),
+                            reason=result.get("reason", ""),
+                        )
+                        print()  # Visual separator
+                        continue  # Skip normal AI response — closing was sent
                 elif result["status"] == "scored":
                     threshold = result.get("threshold", 75)
                     print(f"  [STATUS] Score: {result['score']} / Threshold: {threshold} — devam")
@@ -1701,6 +2147,7 @@ class PromptSimulator:
             system_prompt = self.prompts.build_system_prompt(
                 lead_json=session.lead_json,
                 champ_json=session.champ_json,
+                messages=session.messages,
             )
 
             groq_messages = [{"role": "system", "content": system_prompt}]
@@ -1720,9 +2167,20 @@ class PromptSimulator:
             groq_elapsed = time.time() - t0
 
             session.add_message("assistant", ai_response)
-            print(f"  [AI] → {phone}: {ai_response[:120]}...")
+            print(f"  [AI] -> {phone}: {ai_response[:120]}...")
 
             await self.greenapi.send_split_message(chat_id, ai_response, groq_elapsed=groq_elapsed)
+
+            # ── Execute deferred handoff after answering pending question ──
+            if session._pending_handoff:
+                pending = session._pending_handoff
+                session._pending_handoff = None
+                print(f"  [HANDOFF] Ertelenmiş handoff şimdi çalıştırılıyor...")
+                await self._handle_handoff(
+                    session,
+                    trigger=pending.get("trigger", "deferred"),
+                    reason=pending.get("reason", "deferred_after_answer"),
+                )
 
             print()  # Visual separator
 
@@ -1730,6 +2188,13 @@ class PromptSimulator:
 # ── Entrypoint ───────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Windows cp1254 encoding can't handle emojis/unicode — force UTF-8
+    import io
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     _acquire_singleton_pid()
     env_path = str(PROJECT_ROOT / ".env.simulator")
     cfg = SimConfig.from_env(env_path)

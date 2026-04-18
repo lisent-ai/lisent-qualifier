@@ -33,3 +33,8 @@ class ConversationSession:
     created_at: float = field(default_factory=lambda: datetime.utcnow().timestamp())
     fallback_url: str | None = None
     company_id: str = ""
+    # WhatsApp delivery credentials (populated for WhatsApp-origin sessions so
+    # the handoff handler can deliver the closing message back to the user).
+    wa_instance_id: str = ""
+    wa_api_token: str = ""
+    wa_chat_id: str = ""

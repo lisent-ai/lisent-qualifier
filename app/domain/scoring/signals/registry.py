@@ -51,6 +51,9 @@ class SignalRegistry:
         if sec in ("construction", "insaat", "inşaat"):
             from app.domain.scoring.signals.sectors.construction import ConstructionNegativeDetector
             return ConstructionNegativeDetector()
+        if sec in ("real_estate", "real-estate", "realestate", "emlak", "gayrimenkul"):
+            from app.domain.scoring.signals.sectors.real_estate import RealEstateNegativeDetector
+            return RealEstateNegativeDetector()
         from app.domain.scoring.signals.sectors.general import GeneralNegativeDetector
         return GeneralNegativeDetector()
 
@@ -60,6 +63,9 @@ class SignalRegistry:
         if sec in ("construction", "insaat", "inşaat"):
             from app.domain.scoring.qualifiers.construction import ConstructionQualifier
             return ConstructionQualifier()
+        if sec in ("real_estate", "real-estate", "realestate", "emlak", "gayrimenkul"):
+            from app.domain.scoring.qualifiers.real_estate import RealEstateQualifier
+            return RealEstateQualifier()
         from app.domain.scoring.qualifiers.general import GeneralQualifier
         return GeneralQualifier()
 
@@ -69,5 +75,8 @@ class SignalRegistry:
         if sec in ("construction", "insaat", "inşaat"):
             from app.domain.scoring.signals.sectors.construction import compute_seasonal_modifier
             return compute_seasonal_modifier(month)
+        if sec in ("real_estate", "real-estate", "realestate", "emlak", "gayrimenkul"):
+            from app.domain.scoring.signals.sectors.real_estate import compute_seasonal_modifier as re_seasonal
+            return re_seasonal(month)
         from app.domain.scoring.signals.sectors.general import compute_seasonal_modifier as general_seasonal
         return general_seasonal(month)

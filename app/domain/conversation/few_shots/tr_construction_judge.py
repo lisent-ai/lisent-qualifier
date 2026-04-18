@@ -1,46 +1,46 @@
 """
-Turkish construction / real estate sector few-shot anchors for qualification judge.
+Turkish Cyprus real-estate few-shot anchors for qualification judge.
 
-5 calibration examples spanning the full score range (15, 35, 55, 75, 92).
-These anchor the LLM's scoring to prevent drift and ensure consistency.
-Domain: Cyprus (KKTC) real estate — villas, apartments, investment properties.
+5 calibration examples spanning the full score range.
+Domain: Cyprus Constructions - villas, apartments, resort residences.
 """
 import json
 
+
 JUDGE_EXAMPLES: list[dict] = [
-    # ── Score ~92: Highly qualified lead ──────────────────────────────────
     {
         "conversation": (
-            'MUSTERI: "Girne\'de deniz manzarali villa ariyorum, yatirim ve kendi kullanim icin. '
-            'Butcem 600-800 bin euro, nakidim hazir. Karar verici benim, esim de destekliyor '
-            'ama son karar bende. 1-2 ay icinde ilerlemek istiyorum. Daha once Kibris\'a '
-            'geldim, bolgeyi biliyorum. Kira getirisi potansiyelini de dusunuyorum."'
+            'MUSTERI: "Esentepe tarafinda denize yakin bir villa bakiyorum. '
+            'Bunu yatirim icin dusunuyorum; uygun projeyi erken alip teslime yakin satmak '
+            'daha cok ilgimi cekiyor ama gerekiyorsa bir sure Airbnb tarafina da acigim. '
+            'Butcem 700-900 bin euro, nakit hazir. Karar verici benim, esim gorus bildirir '
+            'ama son karar bende. Bu yaz bitmeden ilerlemek istiyorum. Isterseniz online goruselim."'
         ),
         "output": {
             "thinking": (
-                "1. Proje cok net: Girne, deniz manzarali villa, yatirim + kendi kullanim. "
-                "2. Karar verici kendisi, es destekliyor ama son karar onda — otorite cok guclu. "
-                "3. 600-800K EUR nakit — ciddi ve hazir butce. "
-                "4. 1-2 ay icinde ilerleme — cok acil. "
-                "5. Bolgeyi biliyor, daha once gelmis — ciddiyet yuksek. "
-                "6. Kira getirisi dusunuyor — yatirim bilinciyle hareket ediyor. "
-                "7. Kirmizi bayrak yok. Tam ICP uyumu."
+                "1. Musteri gercek alici ve hedefi net. "
+                "2. Segment acikca yatirimci; segmenti yeniden kesfetmeye gerek yok. "
+                "3. Yatirim modeli guclu sekilde belli: ana plan erken alip teslime yakin satmak, ikincil olarak Airbnb acikligi var. "
+                "4. 700-900K EUR nakit hazir - guclu butce ve finansman hazirligi. "
+                "5. Karar verici net. "
+                "6. Zamanlama net ve yakin. "
+                "7. Online gorusme talebi var; handoff icin cok guclu sinyal."
             ),
             "challenges_score": 24,
-            "challenges_reasoning": "Girne, deniz manzarali villa, yatirim + kendi kullanim — cok net proje tanimi",
+            "challenges_reasoning": "Villa, Esentepe, erken al-sat odakli yatirim modeli net",
             "challenges_confidence": 0.95,
-            "authority_score": 24,
-            "authority_reasoning": "'Karar verici benim, esim destekliyor ama son karar bende' — guclu otorite",
+            "authority_score": 23,
+            "authority_reasoning": "'Karar verici benim' diyerek net otorite verdi",
             "authority_confidence": 0.95,
             "money_score": 24,
-            "money_reasoning": "600-800K EUR nakit butce belirtildi — hazir ve uyumlu",
+            "money_reasoning": "700-900 bin euro ve nakit hazir bilgisi net butce hazirligi gosteriyor",
             "money_confidence": 0.95,
             "prioritization_score": 22,
-            "prioritization_reasoning": "'1-2 ay icinde ilerlemek istiyorum' — cok acil",
+            "prioritization_reasoning": "'Bu yaz bitmeden ilerlemek istiyorum' guclu zamanlama sinyali",
             "prioritization_confidence": 0.9,
-            "holistic_score": 92,
-            "holistic_reasoning": "ICP ile tam uyum. Butun boyutlar guclu. Butce hazir, karar verici net, zaman acil, bolgeyi biliyor. Kira getirisi bilinci ciddiyet gosteriyor.",
-            "icp_fit_assessment": "Tam uyum — yatirim amacli villa, 600K+ EUR nakit, tek karar verici, 2 ay icinde, bolgeyi bilen alici",
+            "holistic_score": 93,
+            "holistic_reasoning": "Butce, otorite, zamanlama ve yatirim modeli guclu. Musteri gorusme de talep ediyor; bu lead satis ekibine hazir.",
+            "icp_fit_assessment": "Tam uyum - ciddi yatirimci, net butce, net karar verici, yakin zamanlama",
             "negative_signals": [],
             "negative_penalty": 0,
             "negative_reasoning": "",
@@ -50,48 +50,54 @@ JUDGE_EXAMPLES: list[dict] = [
                 "has_architect": None,
                 "budget_source": "nakit",
                 "competing_bids": None,
-                "project_sqm": None,
+                "project_sqm": None
             },
-            "missing_info": ["Tahmini metrekare bilgisi"],
-            "recommended_next_question": "Projenin tahmini metrekaresi ne kadar olacak?",
+            "missing_info": ["Tercih edilen cikis plani detayi"],
+            "recommended_next_question": "Bu tarafta agirlik daha cok teslimde cikmakta mi, yoksa 1-2 yil tutup kira veya Airbnb ile degerlendirmekte mi olacak?",
             "handoff_ready": True,
-            "handoff_reason": "Tum CHAMP boyutlari guclu, ICP tam uyum, proje acil",
+            "handoff_reason": "Lead ciddi, gorusme talep ediyor ve temel CHAMP boyutlari guclu",
             "confidence": "high",
+            "extracted_budget_range": "under_500k",
+            "extracted_budget_amount": 900000,
+            "extracted_project_type": "residential",
+            "extracted_timeline_urgency": "short",
+            "extracted_decision_authority": "sole",
+            "extracted_city": "Esentepe",
+            "extracted_project_details": "villa yatirimi, erken al-sat odagi",
         },
     },
-    # ── Score ~75: Good lead with some gaps ──────────────────────────────
     {
         "conversation": (
-            'MUSTERI: "Esimle beraber bakiyoruz. Girne\'de 2+1 veya 3+1 daire dusunuyoruz, '
-            'deniz manzarasi olsa guzel olur. Hem tatil evi hem Airbnb geliri amaciyla. '
-            'Butcemiz 250-350 bin euro arasi. Yazdan once karar vermek isteriz ama henuz '
-            'Kibris\'a gelmedik."'
+            'MUSTERI: "Polonya\'da yasiyorum. Kibris\'ta denize yakin bir yer olsun istiyorum. '
+            'Yazin ara ara ben de kullanayim, kullanmadigim donemlerde Airbnb de olabilir. '
+            'Esimle beraber bakiyoruz. Butcemiz 260-340 bin euro civari. Bu yaz olmasa da yil icinde '
+            'dogru bir sey bulursak ilerleyebiliriz."'
         ),
         "output": {
             "thinking": (
-                "1. Mulk tipi net: 2+1 veya 3+1 daire, deniz manzarasi tercihi. "
-                "2. Esle ortak karar — sole authority degil ama ikisi de karar surecinde. "
-                "3. 250-350K EUR aralik belirtildi — makul ama kesin degil. "
-                "4. 'Yazdan once karar vermek isteriz' — orta vadeli plan, 3-4 ay. "
-                "5. Henuz Kibris'a gelmemis — fiziksel gorusme gerekecek, ek adim. "
-                "6. Airbnb geliri amaci — yatirim bilinci var. "
-                "7. Kirmizi bayrak yok, ciddi bir cift izlenimi."
+                "1. Musteri gercek alici ve tatil evi + gelir hibriti dusunuyor. "
+                "2. Segment tekrar sorulmadan anlasilabilir. "
+                "3. Butce araligi var ama finansman sekli net degil. "
+                "4. Karar ortak. "
+                "5. Zamanlama orta-yakin ama esnek. "
+                "6. Kibris bilgisi ve kullanim donemi biraz daha netlesebilir. "
+                "7. Handoff icin erken ama kaliteli lead."
             ),
             "challenges_score": 18,
-            "challenges_reasoning": "2+1/3+1 daire, deniz manzarasi, tatil + Airbnb — net tercih ama spesifik proje secimi yok",
+            "challenges_reasoning": "Denize yakin tatil evi ve Airbnb hibriti istiyor; ihtiyac makul seviyede net",
             "challenges_confidence": 0.8,
             "authority_score": 14,
-            "authority_reasoning": "'Esimle beraber bakiyoruz' — ortak karar, sole authority degil",
+            "authority_reasoning": "'Esimle beraber bakiyoruz' ortak karar sinyali",
             "authority_confidence": 0.7,
             "money_score": 18,
-            "money_reasoning": "'250-350 bin euro arasi' — aralik belirtildi, ciddi butce",
+            "money_reasoning": "260-340 bin euro araligi verildi ama finansman tipi net degil",
             "money_confidence": 0.8,
-            "prioritization_score": 15,
-            "prioritization_reasoning": "'Yazdan once karar vermek isteriz' — 3-4 ay, orta aciliyet",
+            "prioritization_score": 14,
+            "prioritization_reasoning": "'Yil icinde dogru bir sey bulursak' orta aciliyet ve esneklik gosteriyor",
             "prioritization_confidence": 0.65,
-            "holistic_score": 75,
-            "holistic_reasoning": "Ciddi cift, net mulk tercihi ve butce araligi var. Airbnb gelir amaci yatirim bilinci gosteriyor. Eksikler: henuz Kibris'a gelmemis, esle ortak karar. Takip edilmeli, ziyaret planlanmali.",
-            "icp_fit_assessment": "Iyi uyum — butce uyumlu, mulk tercihi net, zaman var ama henuz fiziksel adim atilmamis",
+            "holistic_score": 76,
+            "holistic_reasoning": "Lead ciddi ve butce uyumlu gorunuyor; ancak Kibris hakimiyeti, kullanim donemi ve karar sureci biraz daha netlesmeli.",
+            "icp_fit_assessment": "Iyi uyum - hem tatil evi hem gelir odagi var, butce uyumlu, karar sureci ortak",
             "negative_signals": [],
             "negative_penalty": 0,
             "negative_reasoning": "",
@@ -101,45 +107,51 @@ JUDGE_EXAMPLES: list[dict] = [
                 "has_architect": None,
                 "budget_source": None,
                 "competing_bids": None,
-                "project_sqm": None,
+                "project_sqm": None
             },
-            "missing_info": ["Proje metrekaresi", "Kat sayisi", "Arsa durumu detayi", "Mimar ile calisiyorlar mi"],
-            "recommended_next_question": "Villanin yaklasik kac metrekare olmasini dusunuyorsunuz?",
+            "missing_info": ["Kullanim donemi", "Kibris hakimiyeti", "Finansman sekli"],
+            "recommended_next_question": "Yilin daha cok hangi donemlerinde kullanmayi dusunuyorsunuz, yoksa agirlik daha cok kira / Airbnb tarafinda mi olacak?",
             "handoff_ready": False,
-            "handoff_reason": "Arsa durumu ve proje detaylari henuz eksik, sohbet ilerliyor",
+            "handoff_reason": "Lead iyi ama karar sureci ve kullanim detayi henuz netlesmedi",
             "confidence": "medium",
+            "extracted_budget_range": "500k_1m",
+            "extracted_budget_amount": 340000,
+            "extracted_project_type": "residential",
+            "extracted_timeline_urgency": "medium",
+            "extracted_decision_authority": "joint",
+            "extracted_city": "",
+            "extracted_project_details": "denize yakin tatil evi, Airbnb opsiyonlu",
         },
     },
-    # ── Score ~55: Borderline lead ───────────────────────────────────────
     {
         "conversation": (
-            'MUSTERI: "Kibris\'ta gayrimenkul yatirimi dusunuyorum ama henuz net bir planım yok. '
-            'Ne tur mulkler var, fiyatlar nasil? Belki gelecek sene bir seyler yapariz."'
+            'MUSTERI: "Kibris\'ta yatirim dusunuyorum ama daha cok arastirma asamasindayim. '
+            'Belki studio, belki 1+1, henuz net degil. Uygun bir proje bulursam bu yil olabilir. '
+            'Fiyat bandiniz ve mantik nasilliyor onu anlamaya calisiyorum."'
         ),
         "output": {
             "thinking": (
-                "1. Genel yatirim ilgisi var ama mulk tipi belirsiz. "
-                "2. Kendi adina konusuyor — muhtemelen karar verici ama net degil. "
-                "3. Butce paylasmamis, 'fiyatlar nasil' genel bilgi talebi. "
-                "4. 'Belki gelecek sene' — uzun vadeli, belirsiz zamanlama. "
-                "5. Henuz cok erken asama ama potansiyel var. "
-                "6. Kirmizi bayrak yok ama ciddiyet dusuk."
+                "1. Yatirim ilgisi var ama tip ve model belirsiz. "
+                "2. Segment yatirimciya yakin ama tekrar sormak yerine yatirim modelini netlestirmek daha degerli. "
+                "3. Butce yok. "
+                "4. Zamanlama belirsiz ama bu yil olabilir sinyali var. "
+                "5. Erken asama bir lead; bilgilendirme ile ilerletilebilir."
             ),
-            "challenges_score": 6,
-            "challenges_reasoning": "'Gayrimenkul yatirimi dusunuyorum' — genel ilgi, somut mulk tercihi yok",
-            "challenges_confidence": 0.35,
+            "challenges_score": 8,
+            "challenges_reasoning": "Studio veya 1+1 gibi genel ilgi var ama net unit tipi ve strateji yok",
+            "challenges_confidence": 0.45,
             "authority_score": 10,
-            "authority_reasoning": "Kendi yatirimi olarak bahsediyor — muhtemelen karar verici",
+            "authority_reasoning": "Kendi adina konusuyor gibi gorunuyor ama karar yapisi net degil",
             "authority_confidence": 0.45,
             "money_score": 3,
-            "money_reasoning": "Butce paylasmadi, sadece 'fiyatlar nasil' soruyor",
+            "money_reasoning": "Butce paylasilmadi",
             "money_confidence": 0.2,
-            "prioritization_score": 5,
-            "prioritization_reasoning": "'Belki gelecek sene' — belirsiz, uzun vadeli",
-            "prioritization_confidence": 0.3,
-            "holistic_score": 55,
-            "holistic_reasoning": "Erken asamada potansiyel musteri. Yatirim ilgisi var ama mulk tipi, butce ve zaman belirsiz. Bilgilendirme ile ilerlenebilir ama acil handoff gereksiz.",
-            "icp_fit_assessment": "Dusuk uyum — yatirim ilgisi var ama somut plan, butce ve zaman eksik",
+            "prioritization_score": 9,
+            "prioritization_reasoning": "'Bu yil olabilir' zayif ama faydali bir zamanlama sinyali",
+            "prioritization_confidence": 0.4,
+            "holistic_score": 57,
+            "holistic_reasoning": "Potansiyel var ama erken asamada. Once yatirim modeli ve butce netlesmeli.",
+            "icp_fit_assessment": "Orta-alt uyum - ilgi var ama net ciddiyet ve butce eksik",
             "negative_signals": [],
             "negative_penalty": 0,
             "negative_reasoning": "",
@@ -149,106 +161,285 @@ JUDGE_EXAMPLES: list[dict] = [
                 "has_architect": None,
                 "budget_source": None,
                 "competing_bids": None,
-                "project_sqm": None,
+                "project_sqm": None
             },
-            "missing_info": ["Proje tipi ve kapsamı", "Butce araligi", "Arsa durumu", "Somut zaman cizelgesi"],
-            "recommended_next_question": "Ne tur bir proje dusunuyorsunuz — konut mu, ticari mi?",
+            "missing_info": ["Yatirim modeli", "Butce", "Karar sureci"],
+            "recommended_next_question": "Bu tarafta daha cok projeyi erken alip teslimde satmak mi dusunuyorsunuz, yoksa kira / Airbnb gelirine donuk bir plan mi var?",
             "handoff_ready": False,
-            "handoff_reason": "Erken asamada, proje ve butce belirsiz",
+            "handoff_reason": "Erken asama; yatirim modeli ve butce netlesmeden handoff icin erken",
             "confidence": "low",
+            "extracted_budget_range": "",
+            "extracted_budget_amount": None,
+            "extracted_project_type": "residential",
+            "extracted_timeline_urgency": "medium",
+            "extracted_decision_authority": "",
+            "extracted_city": "",
+            "extracted_project_details": "studio veya 1+1 yatirimi dusunuyor",
         },
     },
-    # ── Score ~35: Low quality lead ──────────────────────────────────────
     {
         "conversation": (
-            'MUSTERI: "Kuzey Kibris\'ta fiyatlar nasil? Ne kadara mulk alinabiliyor?"'
+            'MUSTERI: "Fiyatlar ne kadar? Studio kac para? 1+1 kac para? Bir liste var mi?"'
         ),
         "output": {
             "thinking": (
-                "1. Sadece fiyat soruyor — somut mulk tercihi yok. "
-                "2. Karar verici durumu bilinmiyor. "
-                "3. Butce paylasmadan fiyat soruyor — price fishing riski. "
-                "4. Zaman cizelgesi yok. "
-                "5. Henuz tek mesaj, kesin degerlendirme icin erken. "
-                "6. Potansiyel var ama ciddiyet sinyali dusuk."
+                "1. Sadece fiyat soruyor. "
+                "2. Butce, zamanlama, karar verici ve kullanim amaci yok. "
+                "3. Price fishing riski var ama tek tur oldugu icin kontrollu ceza gerekir. "
+                "4. Once segmentten cok butce ve niyet sinyali toplamak gerekir."
             ),
             "challenges_score": 3,
-            "challenges_reasoning": "'Fiyatlar nasil, ne kadara alinabiliyor' — genel bilgi talebi, mulk tercihi yok",
+            "challenges_reasoning": "Unit tipi sadece genel seviyede geciyor; gercek ihtiyac net degil",
             "challenges_confidence": 0.25,
             "authority_score": 0,
-            "authority_reasoning": "Hicbir bilgi yok",
+            "authority_reasoning": "Karar yapisi hakkinda hic bilgi yok",
             "authority_confidence": 0.1,
             "money_score": 2,
-            "money_reasoning": "Fiyat soruyor ama kendi butcesi hakkinda bilgi yok",
+            "money_reasoning": "Kendi butcesini vermeden sadece fiyat soruyor",
             "money_confidence": 0.15,
             "prioritization_score": 0,
-            "prioritization_reasoning": "Zaman bilgisi yok",
+            "prioritization_reasoning": "Zamanlama bilgisi yok",
             "prioritization_confidence": 0.1,
-            "holistic_score": 35,
-            "holistic_reasoning": "Genel bilgi talebi. Mulk tercihi, butce, yetki ve zaman eksik. Price fishing riski var ama tek mesajla kesin degil. Daha fazla bilgi toplama gerekli.",
-            "icp_fit_assessment": "Cok dusuk uyum — hicbir ICP kriteri karsilanmiyor",
-            "negative_signals": [],
-            "negative_penalty": 0,
-            "negative_reasoning": "Henuz tek mesaj, kesin negatif sinyal yok",
+            "holistic_score": 34,
+            "holistic_reasoning": "Genel fiyat arastirmasi gibi gorunuyor. Daha fazla bilgi toplanmadan handoff yapilmaz.",
+            "icp_fit_assessment": "Dusuk uyum - sadece fiyat odakli, butce ve ciddiyet yok",
+            "negative_signals": ["price_fishing"],
+            "negative_penalty": -10,
+            "negative_reasoning": "Butce vermeden fiyat istiyor",
             "sector_qualifiers": {
                 "has_land": None,
                 "permit_status": None,
                 "has_architect": None,
                 "budget_source": None,
                 "competing_bids": None,
-                "project_sqm": None,
+                "project_sqm": None
             },
-            "missing_info": ["Proje tipi", "Konum", "Butce", "Karar verici durumu", "Zaman cizelgesi"],
-            "recommended_next_question": "Ne tur bir proje dusunuyorsunuz? Konut mu yoksa ticari bir proje mi?",
+            "missing_info": ["Butce", "Kullanim / yatirim amaci", "Zamanlama"],
+            "recommended_next_question": "Daha net yonlendirebilmem icin bu tarafta nasil bir butce bandi dusunuyorsunuz?",
             "handoff_ready": False,
-            "handoff_reason": "Yeterli bilgi yok, sohbet devam etmeli",
+            "handoff_reason": "Yeterli kalifikasyon sinyali yok; sohbet devam etmeli",
             "confidence": "low",
+            "extracted_budget_range": "",
+            "extracted_budget_amount": None,
+            "extracted_project_type": "residential",
+            "extracted_timeline_urgency": "",
+            "extracted_decision_authority": "",
+            "extracted_city": "",
+            "extracted_project_details": "genel fiyat arastirmasi",
         },
     },
-    # ── Score ~15: Disqualified / competitor ─────────────────────────────
     {
         "conversation": (
-            'MUSTERI: "Biz de emlak sektorundeyiz, piyasa karsilastirmasi yapiyoruz. '
-            'Fiyat listenizi paylasir misiniz?"'
+            'MUSTERI: "Kibris tarafini cok bilmiyorum. Neler var elinizde, siz yonlendirirseniz daha iyi olur. '
+            'Yazin ara ara ben de kullanmak isterim ama para da getirsin. Henuz karar vermedim, once mantigini anlamak istiyorum."'
         ),
         "output": {
             "thinking": (
-                "1. Acikca emlak sektorunde oldugunu soyledi. "
-                "2. 'Piyasa karsilastirmasi' — musteri degil, rakip istihbarati. "
-                "3. Bu lead diskalifiye edilmeli. "
-                "4. Hicbir CHAMP boyutu gecerli degil."
+                "1. Gercek bir alici olma ihtimali var ama erken kesif asamasinda. "
+                "2. Tatil evi + gelir hibriti dusunuyor; bu nedenle segmenti tekrar sormaya gerek yok. "
+                "3. 'Siz yonlendirin' diyerek yeni qualification sorusundan once insan gibi cerceve ve onerinin verilmesini bekliyor. "
+                "4. Butce ve karar yapisi eksik. "
+                "5. 'Henuz karar vermedim' net fren sinyali; satin almaya geciyor gibi dusunulmemeli. "
+                "6. Handoff icin erken."
             ),
-            "challenges_score": 0,
-            "challenges_reasoning": "Rakip firma — gercek bir mulk alim niyeti yok",
-            "challenges_confidence": 0.9,
-            "authority_score": 0,
-            "authority_reasoning": "Musteri degil, sektor calisani",
-            "authority_confidence": 0.9,
-            "money_score": 0,
-            "money_reasoning": "Alis butcesi yok — piyasa arastirmasi",
-            "money_confidence": 0.9,
-            "prioritization_score": 0,
-            "prioritization_reasoning": "Satin alma niyeti yok",
-            "prioritization_confidence": 0.9,
-            "holistic_score": 5,
-            "holistic_reasoning": "Rakip / sektor calisani — diskalifiye. Satis ekibinin zamani harcanmamali.",
-            "icp_fit_assessment": "Uyumsuz — potansiyel musteri degil, rakip/sektor arastirmasi",
-            "negative_signals": ["competitor"],
-            "negative_penalty": -100,
-            "negative_reasoning": "'Biz de emlak sektorundeyiz, piyasa karsilastirmasi' — acik rakip beyani",
+            "challenges_score": 16,
+            "challenges_reasoning": "Kullanim + gelir hibriti ihtiyaci makul olcude net",
+            "challenges_confidence": 0.75,
+            "authority_score": 8,
+            "authority_reasoning": "Kendi adina konusuyor gibi ama karar sureci acik degil",
+            "authority_confidence": 0.35,
+            "money_score": 4,
+            "money_reasoning": "Butce veya finansman hazirligi yok",
+            "money_confidence": 0.2,
+            "prioritization_score": 9,
+            "prioritization_reasoning": "Yaz kullanimi sinyali var ama satin alma zamani belirsiz",
+            "prioritization_confidence": 0.45,
+            "holistic_score": 58,
+            "holistic_reasoning": "Lead potansiyelli ama erken asamada; once guven veren yonlendirme ve kullanim senaryosu netligi lazim.",
+            "icp_fit_assessment": "Orta uyum - ilgi var ama butce ve karar netligi eksik",
+            "negative_signals": ["just_looking"],
+            "negative_penalty": -4,
+            "negative_reasoning": "'Henuz karar vermedim, once mantigini anlamak istiyorum' ifadesi erken arastirma sinyali",
             "sector_qualifiers": {
                 "has_land": None,
                 "permit_status": None,
                 "has_architect": None,
                 "budget_source": None,
                 "competing_bids": None,
-                "project_sqm": None,
+                "project_sqm": None
+            },
+            "missing_info": ["Kullanim donemi", "Butce", "Karar sureci"],
+            "recommended_next_question": "Yilin daha cok hangi donemlerinde kullanmayi dusunuyorsunuz, yoksa agirlik daha cok gelir tarafinda mi olacak?",
+            "handoff_ready": False,
+            "handoff_reason": "Erken kesif asamasi; once yonlendirme ve temel sinyaller netlesmeli",
+            "confidence": "medium",
+            "extracted_budget_range": "",
+            "extracted_budget_amount": None,
+            "extracted_project_type": "residential",
+            "extracted_timeline_urgency": "medium",
+            "extracted_decision_authority": "",
+            "extracted_city": "",
+            "extracted_project_details": "tatil evi + gelir hibriti, yonlendirme bekliyor",
+        },
+    },
+    {
+        "conversation": (
+            'ASISTAN: "Isterseniz ornek dagilim ve odeme cercevesi hazirlayayim." '
+            'MUSTERI: "Olur ama once bir dusuneyim, karar vermedim henuz."'
+        ),
+        "output": {
+            "thinking": (
+                "1. Kullanici materyal almaya acik ama satin alma karari vermis degil. "
+                "2. 'Olur' burada devam izni; tek basina buying signal sayilmaz. "
+                "3. 'Once bir dusuneyim' yumusak bekletme cumlesi. "
+                "4. Bu durumda yeni qualification sorusu veya handoff zorlamak yanlis olur. "
+                "5. Baskiyi dusurup kapiyi acik birakmak gerekir."
+            ),
+            "challenges_score": 10,
+            "challenges_reasoning": "Ne aradigi bu kesitte ayrintili degil",
+            "challenges_confidence": 0.35,
+            "authority_score": 8,
+            "authority_reasoning": "Karar sureci tek basina gibi gorunse de net degil",
+            "authority_confidence": 0.25,
+            "money_score": 6,
+            "money_reasoning": "Odeme cercevesine ilgi var ama net finansman sinyali yok",
+            "money_confidence": 0.3,
+            "prioritization_score": 4,
+            "prioritization_reasoning": "Beklemeyi tercih ediyor, yakin aksiyon sinyali yok",
+            "prioritization_confidence": 0.3,
+            "holistic_score": 43,
+            "holistic_reasoning": "Ilgi suruyor ama musteri durup dusunmek istiyor; bu asamada handoff icin erken.",
+            "icp_fit_assessment": "Belirsiz/erken - ilgi var ama momentum dusuk",
+            "negative_signals": [],
+            "negative_penalty": 0,
+            "negative_reasoning": "",
+            "sector_qualifiers": {
+                "has_land": None,
+                "permit_status": None,
+                "has_architect": None,
+                "budget_source": None,
+                "competing_bids": None,
+                "project_sqm": None
+            },
+            "missing_info": ["Temel ihtiyac", "Butce", "Zamanlama"],
+            "recommended_next_question": "",
+            "handoff_ready": False,
+            "handoff_reason": "Musteri dusunmek icin beklemek istiyor; baskisiz sekilde devam edilmeli",
+            "confidence": "medium",
+            "extracted_budget_range": "",
+            "extracted_budget_amount": None,
+            "extracted_project_type": "residential",
+            "extracted_timeline_urgency": "",
+            "extracted_decision_authority": "",
+            "extracted_city": "",
+            "extracted_project_details": "ornek odeme cercevesine acik ama dusunme modunda",
+        },
+    },
+    {
+        "conversation": (
+            'MUSTERI: "Biz de emlak sektorundeyiz, piyasayi karsilastiriyoruz. '
+            'Aktif fiyat listenizi paylasir misiniz?"'
+        ),
+        "output": {
+            "thinking": (
+                "1. Musteri oldugunu soylemiyor; emlak sektorunde oldugunu acikca belirtiyor. "
+                "2. Amac piyasa karsilastirmasi. "
+                "3. Gercek satin alma niyeti yok; rakip / sektor arastirmasi gibi gorunuyor."
+            ),
+            "challenges_score": 0,
+            "challenges_reasoning": "Gercek alim ihtiyaci yok",
+            "challenges_confidence": 0.95,
+            "authority_score": 0,
+            "authority_reasoning": "Musteri degil, sektor profesyoneli",
+            "authority_confidence": 0.95,
+            "money_score": 0,
+            "money_reasoning": "Alis butcesi yok",
+            "money_confidence": 0.95,
+            "prioritization_score": 0,
+            "prioritization_reasoning": "Satin alma zamanlamasi yok",
+            "prioritization_confidence": 0.95,
+            "holistic_score": 5,
+            "holistic_reasoning": "Rakip / sektor arastirmasi gibi gorunuyor; diskalifiye edilmeli.",
+            "icp_fit_assessment": "Uyumsuz - potansiyel alici degil",
+            "negative_signals": ["competitor"],
+            "negative_penalty": -100,
+            "negative_reasoning": "Acikca emlak sektorunde oldugunu ve karsilastirma yaptigini soyledi",
+            "sector_qualifiers": {
+                "has_land": None,
+                "permit_status": None,
+                "has_architect": None,
+                "budget_source": None,
+                "competing_bids": None,
+                "project_sqm": None
             },
             "missing_info": [],
             "recommended_next_question": "",
             "handoff_ready": False,
-            "handoff_reason": "Rakip firma, yonlendirme gereksiz",
+            "handoff_reason": "Rakip / sektor arastirmasi; handoff gereksiz",
             "confidence": "high",
+            "extracted_budget_range": "",
+            "extracted_budget_amount": None,
+            "extracted_project_type": "",
+            "extracted_timeline_urgency": "",
+            "extracted_decision_authority": "",
+            "extracted_city": "",
+            "extracted_project_details": "",
+        },
+    },
+    {
+        "conversation": (
+            'MUSTERI: "KKTC\'de ilk yatirimim olacak. '
+            'Esentepe veya Girne tarafinda 1+1 ya da 2+1 bir sey dusunuyorum. '
+            'Butcem 230-300 bin sterlin. '
+            'Pesinat ve 2-3 yillik taksit benim icin onemli; Turkiye tarafindan kredi secenegi de varsa duymak isterim. '
+            'Bu ay icinde uygun proje varsa detayli odeme planina bakip gorusme yapabiliriz."'
+        ),
+        "output": {
+            "thinking": (
+                "1. Musteri gercek alici gibi gorunuyor; ilk kez KKTC yatirimi yapacak ama net bir alis niyeti var. "
+                "2. Segment yatirimci ve ayni zamanda rehberlik bekliyor. "
+                "3. Butce araligi net, pesinat ve taksit yapisi aktif karar kriteri. "
+                "4. Zamanlama yakin. "
+                "5. Odeme plani ve gorusme istegi handoff icin guclu sinyal."
+            ),
+            "challenges_score": 18,
+            "challenges_reasoning": "Esentepe veya Girne'de 1+1 / 2+1 yatirim dusunuyor; ihtiyac cercevesi yeterince net",
+            "challenges_confidence": 0.8,
+            "authority_score": 14,
+            "authority_reasoning": "Kendi adina konusuyor ama ortak karar bilgisi net degil",
+            "authority_confidence": 0.55,
+            "money_score": 20,
+            "money_reasoning": "230-300 bin sterlin butce verdi; pesinat, taksit ve kredi secenegi karar kriteri",
+            "money_confidence": 0.9,
+            "prioritization_score": 19,
+            "prioritization_reasoning": "'Bu ay icinde' ifadesi yakin zamanlama ve aksiyon istegi gosteriyor",
+            "prioritization_confidence": 0.85,
+            "holistic_score": 82,
+            "holistic_reasoning": "Lead ciddi, butce ve odeme yapisi net, odeme plani ve gorusme istegi var. Satis ekibine aktarima uygun.",
+            "icp_fit_assessment": "Guclu uyum - ilk kez KKTC yatirimcisi ama net butce, yakin zamanlama ve proje/odeme ilgisi var",
+            "negative_signals": [],
+            "negative_penalty": 0,
+            "negative_reasoning": "",
+            "sector_qualifiers": {
+                "has_land": None,
+                "permit_status": None,
+                "has_architect": None,
+                "budget_source": "mixed",
+                "competing_bids": None,
+                "project_sqm": None
+            },
+            "missing_info": ["Karar surecine baska biri dahil mi"],
+            "recommended_next_question": "Bu tarafta karar sizin uzerinizden mi ilerliyor, yoksa aileden baska biri de surece dahil olacak mi?",
+            "handoff_ready": True,
+            "handoff_reason": "Lead odeme plani ve gorusme talebiyle birlikte net butce ve yakin zamanlama paylasti",
+            "confidence": "high",
+            "extracted_budget_range": "500k_1m",
+            "extracted_budget_amount": 300000,
+            "extracted_project_type": "residential",
+            "extracted_timeline_urgency": "short",
+            "extracted_decision_authority": "",
+            "extracted_city": "Esentepe",
+            "extracted_project_details": "ilk kez KKTC yatirimi, 1+1 veya 2+1, odeme plani odakli",
         },
     },
 ]
@@ -260,5 +451,7 @@ def format_judge_few_shot_examples() -> str:
     for i, ex in enumerate(JUDGE_EXAMPLES, 1):
         parts.append(f"### Ornek {i}")
         parts.append(f"Konusma: {ex['conversation']}")
-        parts.append(f"Beklenen Cikti:\n```json\n{json.dumps(ex['output'], ensure_ascii=False, indent=2)}\n```\n")
+        parts.append(
+            f"Beklenen Cikti:\n```json\n{json.dumps(ex['output'], ensure_ascii=False, indent=2)}\n```\n"
+        )
     return "\n".join(parts)

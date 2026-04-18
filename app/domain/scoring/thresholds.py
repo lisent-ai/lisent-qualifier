@@ -58,4 +58,14 @@ def compute_threshold(
     if project_type == "land":
         return min(85, base + 5)
 
+    # Residential investor (Cyprus real-estate): standard threshold for
+    # mid/upper budgets, stricter for the smallest budgets where qualification
+    # risk is higher (tourism-driven decisions, speculative shopping).
+    if project_type == "residential_investor":
+        if budget_range in ("500k_1m", "1m_3m", "3m_10m", "over_10m"):
+            return base
+        if budget_range in ("under_500k",):
+            return min(85, base + 10)
+        return base
+
     return base

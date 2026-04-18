@@ -4,6 +4,7 @@ ConversationHandler:
   - Triggers CHAMP extraction every N messages
   - Streams Groq response via SSE
 """
+import re
 import structlog
 from typing import AsyncGenerator
 
@@ -24,6 +25,144 @@ from app.infrastructure.crm.rest_client import (
 )
 
 log = structlog.get_logger(__name__)
+
+
+_OPEN_QUESTION_PATTERNS: dict[str, tuple[str, ...]] = {
+    "tr": (
+        "?",
+        "ne ",
+        "nedir",
+        "nasil",
+        "nasıl",
+        "hangi",
+        "kac",
+        "kaç",
+        "var mi",
+        "var mı",
+        "olur mu",
+        "mantikli",
+        "mantıklı",
+        "oner",
+        "öner",
+        "gonder",
+        "gönder",
+        "bilgi",
+        "detay",
+    ),
+    "en": (
+        "?",
+        "what",
+        "which",
+        "how",
+        "can you",
+        "could you",
+        "details",
+        "info",
+        "send",
+    ),
+}
+
+_FOLLOWUP_OFFER_PATTERNS: dict[str, tuple[str, ...]] = {
+    "tr": (
+        "gorusme",
+        "görüşme",
+        "telefon",
+        "video",
+        "randevu",
+        "arayalim",
+        "arayalım",
+        "konusalim",
+        "konuşalım",
+        "danisman",
+        "danışman",
+        "temsilci",
+        "uzman",
+    ),
+    "en": (
+        "call",
+        "meeting",
+        "video",
+        "specialist",
+        "consultant",
+        "representative",
+        "speak",
+        "schedule",
+    ),
+}
+
+_FOLLOWUP_ACCEPTANCE_PATTERNS: dict[str, tuple[str, ...]] = {
+    "tr": (
+        "olur",
+        "tamam",
+        "yarin",
+        "yarın",
+        "ogleden sonra",
+        "öğleden sonra",
+        "sabah",
+        "uygun",
+        "goruselim",
+        "görüşelim",
+        "konusalim",
+        "konuşalım",
+    ),
+    "en": (
+        "ok",
+        "okay",
+        "sounds good",
+        "tomorrow",
+        "afternoon",
+        "morning",
+        "works for me",
+        "let's do it",
+    ),
+}
+
+
+def _message_requires_reply_before_handoff(message: str, language: str) -> bool:
+    text = re.sub(r"\s+", " ", (message or "").strip().lower())
+    if not text:
+        return False
+
+    patterns = _OPEN_QUESTION_PATTERNS.get(language, _OPEN_QUESTION_PATTERNS["en"])
+    if any(token in text for token in patterns):
+        return True
+
+    if language == "tr":
+        return any(
+            phrase in text
+            for phrase in (
+                "iki konu hakkinda",
+                "iki konu hakkında",
+                "bilgi ver",
+                "bilgi verir misin",
+                "yonlendir",
+                "yönlendir",
+            )
+        )
+    return False
+
+
+def _find_previous_assistant_message(messages: list[dict] | None) -> str:
+    if not messages:
+        return ""
+    for message in reversed(messages):
+        if str(message.get("role", "")).lower() == "assistant" and message.get("content"):
+            return str(message["content"]).lower()
+    return ""
+
+
+def _is_accepting_human_followup(message: str, previous_assistant: str, language: str) -> bool:
+    current = re.sub(r"\s+", " ", (message or "").strip().lower())
+    if not current or not previous_assistant:
+        return False
+
+    offer_tokens = _FOLLOWUP_OFFER_PATTERNS.get(language, _FOLLOWUP_OFFER_PATTERNS["en"])
+    acceptance_tokens = _FOLLOWUP_ACCEPTANCE_PATTERNS.get(language, _FOLLOWUP_ACCEPTANCE_PATTERNS["en"])
+
+    if not any(token in previous_assistant for token in offer_tokens):
+        return False
+
+    return any(token in current for token in acceptance_tokens)
 
 
 class ConversationHandler:
@@ -81,7 +220,17 @@ class ConversationHandler:
 
         # ── LAYER 1: Instant trigger check ──────────────────────────────
         language = (company_config or {}).get("primary_language", "tr")
+        previous_assistant_message = _find_previous_assistant_message(
+            [{"role": m.role, "content": m.content} for m in session.messages[:-1]]
+        )
         instant_handoff, instant_reason = check_instant_handoff(cmd.content, language)
+        if not instant_handoff and _is_accepting_human_followup(
+            cmd.content,
+            previous_assistant_message,
+            language,
+        ):
+            instant_handoff = True
+            instant_reason = "accepted_human_followup"
         if instant_handoff:
             log.info(
                 "instant_handoff_triggered",
@@ -169,13 +318,21 @@ class ConversationHandler:
             if msg_count >= max_msgs:
                 if not should_extract:
                     should_extract = True
-                force_handoff_after = True
-                log.info(
-                    "max_messages_reached",
-                    session_id=cmd.session_id,
-                    msg_count=msg_count,
-                    max_msgs=max_msgs,
-                )
+                if _message_requires_reply_before_handoff(cmd.content, language):
+                    log.info(
+                        "max_messages_reached_but_open_question",
+                        session_id=cmd.session_id,
+                        msg_count=msg_count,
+                        max_msgs=max_msgs,
+                    )
+                else:
+                    force_handoff_after = True
+                    log.info(
+                        "max_messages_reached",
+                        session_id=cmd.session_id,
+                        msg_count=msg_count,
+                        max_msgs=max_msgs,
+                    )
 
         return {
             "session_id": cmd.session_id,
@@ -224,30 +381,33 @@ class ConversationHandler:
             except Exception as exc:
                 log.warning("kb_documents_fetch_failed", error=str(exc))
 
-        # Fetch webhook data and merge into KB content
+        # Fetch webhook data, transform to KB text, and merge into KB content
         if session.company_id and company_config is not None:
             try:
-                import json as _json
+                from app.domain.knowledge.project_transformer import transform_webhook_entries
                 webhook_data = await fetch_company_webhook_data(session.company_id)
                 if webhook_data:
-                    webhook_combined = "\n\n---\n\n".join(
-                        f"[webhook:{entry.get('id', 'unknown')}]\n"
-                        + _json.dumps(entry.get("payload", {}), ensure_ascii=False, indent=2)
-                        for entry in webhook_data
-                    )
-                    if webhook_combined:
+                    language = (company_config or {}).get("primary_language", "tr")
+                    webhook_kb = transform_webhook_entries(webhook_data, language)
+                    if webhook_kb:
                         existing_kb = company_config.get("kb_documents_content", "")
                         separator = "\n\n---\n\n" if existing_kb else ""
                         company_config = {
                             **company_config,
-                            "kb_documents_content": (existing_kb + separator + webhook_combined)[:8000],
+                            "kb_documents_content": (existing_kb + separator + webhook_kb)[:8000],
                         }
             except Exception as exc:
                 log.warning("webhook_data_fetch_failed", error=str(exc))
 
-        system_prompt = build_chat_system_prompt(session.lead_json, session.champ_json, company_config)
+        prompt_messages = [{"role": m.role, "content": m.content} for m in session.messages]
+        system_prompt = build_chat_system_prompt(
+            session.lead_json,
+            session.champ_json,
+            company_config,
+            messages=prompt_messages,
+        )
         messages = [{"role": "system", "content": system_prompt}]
-        messages += [{"role": m.role, "content": m.content} for m in session.messages]
+        messages += prompt_messages
 
         collected = []
         try:

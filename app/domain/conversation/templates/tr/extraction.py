@@ -63,4 +63,14 @@ CONSTRUCTION_QUALIFIERS_INSTRUCTION = """Ayrıca inşaat sektörüne özel bilgi
 - competing_bids: Başka firmalardan teklif alıyor mu? (true/false/null)
 - project_sqm: Proje metrekaresi (int/null)"""
 
+# Sector qualifier instruction for real estate (Cyprus investor)
+REAL_ESTATE_QUALIFIERS_INSTRUCTION = """Ayrıca emlak yatırım sektörüne özel bilgileri de çıkar:
+- has_property_shortlist: İlgilendiği somut proje/villa sayısı (int/null; iki veya daha fazlasını somut isimlendirdiyse >=2)
+- financing_ready: Finansman hazırlığı ("cash"/"approved"/"pending"/"none"/null)
+- visit_intent: Kıbrıs'a gelip evi yerinde görme niyeti var mı? (true/false/null)
+- decision_partner_aligned: Eş/ortak gibi bir karar partneri var ve mutabık mı? (true/false/null)
+- exit_strategy_clear: Kiralama/flip/tatil evi gibi net bir çıkış stratejisi var mı? (true/false/null)
+- property_type: Mülk tipi ("studio"/"apartment"/"villa"/"land"/null)
+- location: İlgilendiği lokasyon (örn. "esentepe"/"girne"/"çatalköy"/null)"""
+
 GENERAL_QUALIFIERS_INSTRUCTION = ""

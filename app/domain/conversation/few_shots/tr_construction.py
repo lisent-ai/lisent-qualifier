@@ -93,6 +93,30 @@ EXAMPLES: list[dict] = [
             "confidence": "medium",
         },
     },
+    {
+        "conversation": (
+            'MÃœÅTERÄ°: "KKTC tarafÄ±nda ilk yatÄ±rÄ±mÄ±m olacak. '
+            '1+1 ya da 2+1, denize yakÄ±n bir tarafta olsun istiyorum. '
+            'BÃ¼tÃ§em 220-280 bin sterlin civarÄ±. '
+            '2-3 yÄ±llÄ±k taksit ve peÅŸinat yapÄ±sÄ± benim iÃ§in Ã¶nemli; TÃ¼rkiye\'den kredi opsiyonu da varsa duymak isterim. '
+            'DoÄŸru projeyi bulursam yazdan Ã¶nce ilerlemek istiyorum."'
+        ),
+        "output": {
+            "challenges_score": 19,
+            "authority_score": 12,
+            "money_score": 18,
+            "prioritization_score": 17,
+            "challenges_notes": "Ä°lk kez KKTC yatÄ±rÄ±mÄ± yapacak, denize yakÄ±n 1+1 veya 2+1 arÄ±yor",
+            "authority_notes": "Kendi adÄ±na konuÅŸuyor gibi ama karar yapÄ±sÄ± tam net deÄŸil",
+            "money_notes": "220-280 bin sterlin bÃ¼tÃ§e var; peÅŸinat, taksit ve kredi opsiyonu aktif ilgisinde",
+            "prioritization_notes": "Yazdan Ã¶nce ilerlemek istiyor, yakÄ±n zamanlama sinyali var",
+            "challenges_confidence": 0.85,
+            "authority_confidence": 0.45,
+            "money_confidence": 0.85,
+            "prioritization_confidence": 0.8,
+            "confidence": "high",
+        },
+    },
 ]
 
 

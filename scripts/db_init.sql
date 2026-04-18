@@ -59,11 +59,20 @@ CREATE TABLE IF NOT EXISTS qualifier_handoffs (
   champ_json      JSONB,
   crm_sent       BOOLEAN NOT NULL DEFAULT FALSE,
   sent_at        TIMESTAMPTZ,
+  cta_type       TEXT,                -- 'cyprus_visit' | 'calendly' | 'nurture'
+  meeting_url    TEXT,                -- Calendly URL (only populated for cta_type='calendly')
+  qualification_potential TEXT,       -- 'high' | 'medium' | 'low'
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Idempotent migration for existing installations
+ALTER TABLE qualifier_handoffs ADD COLUMN IF NOT EXISTS cta_type TEXT;
+ALTER TABLE qualifier_handoffs ADD COLUMN IF NOT EXISTS meeting_url TEXT;
+ALTER TABLE qualifier_handoffs ADD COLUMN IF NOT EXISTS qualification_potential TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_qh_lead_id    ON qualifier_handoffs(lead_id);
 CREATE INDEX IF NOT EXISTS idx_qh_company_id ON qualifier_handoffs(company_id);
+CREATE INDEX IF NOT EXISTS idx_qh_cta_type   ON qualifier_handoffs(cta_type);
 
 -- Activity log
 CREATE TABLE IF NOT EXISTS activity_log (

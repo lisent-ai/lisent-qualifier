@@ -72,6 +72,10 @@ class Settings(BaseSettings):
         "Teşekkürler! Uzman ekibimiz en kısa sürede sizinle iletişime geçecek."
     )
 
+    # CTA routing
+    default_calendly_url: str = "https://calendly.com/redif"
+    cta_medium_floor: int = Field(default=50, ge=0, le=100)
+
 
 _settings: Settings | None = None
 

@@ -35,6 +35,12 @@ intent - pick ONE:
 - "small_talk": greetings, "evet", "tamam", "ok", off-topic
 - "info_seeking": general questions, asking for information (default)
 
+Contextual overrides:
+- If the user says "olur", "isterim", "tamam gonder" AFTER the assistant offered to share a quote, sample, material, or payment outline, this is NOT automatically a buying_signal. Treat it as permission to continue, usually "info_seeking".
+- If the user says "you already have this info", "it's in the form", "I already mentioned that", this is not small talk. It is a meaningful correction/clarification.
+- If the user says "I haven't decided yet", "I'm just gathering information", or similar, do NOT mark it as buying_signal. This is usually "info_seeking".
+- "I'll think about it" or "I'll get back to you" is not a buying signal by itself.
+
 information_value - pick ONE:
 - "high": contains budget numbers, project specs (rooms, sqm, location), timeline, or buying signals
 - "low": very short (<15 chars), single words, greetings, "evet"/"tamam"/"ok"
@@ -47,6 +53,10 @@ Examples:
 - "Pahali" (late stage) -> {{"intent":"negotiation","sentiment":"negative","information_value":"medium","buying_signals":[],"negative_signals":[],"champ_dimensions":["money"]}}
 - "Evet" -> {{"intent":"small_talk","sentiment":"positive","information_value":"low","buying_signals":[],"negative_signals":[],"champ_dimensions":[]}}
 - "Sadece bakiyorum" -> {{"intent":"info_seeking","sentiment":"neutral","information_value":"low","buying_signals":[],"negative_signals":["just_researching"],"champ_dimensions":[]}}
+- Context says assistant offered a quote, user says "Olur isterim" -> {{"intent":"info_seeking","sentiment":"positive","information_value":"medium","buying_signals":[],"negative_signals":[],"champ_dimensions":[]}}
+- "Bu bilgiler var sizde" -> {{"intent":"info_seeking","sentiment":"neutral","information_value":"medium","buying_signals":[],"negative_signals":[],"champ_dimensions":[]}}
+- "Karar vermedim, bilgi aliyorum" -> {{"intent":"info_seeking","sentiment":"neutral","information_value":"medium","buying_signals":[],"negative_signals":[],"champ_dimensions":[]}}
+- "I'll think about it" -> {{"intent":"info_seeking","sentiment":"neutral","information_value":"medium","buying_signals":[],"negative_signals":[],"champ_dimensions":[]}}
 
 Return ONLY the JSON object."""
 

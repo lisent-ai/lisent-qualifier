@@ -2,26 +2,36 @@
 HandoffHandler:
   1. Enrich lead data (fill empty fields from CHAMP extraction)
   2. Generate reasoning_report via local LLM
-  3. Send closing message via Groq
-  4. Build signal summary + outreach mapping
-  5. Send full HandoffPackage to CRM
-  6. Set session.stage = HANDOFF
+  3. Route CTA (cyprus_visit / calendly / nurture)
+  4. Generate closing message via Groq and deliver to WhatsApp
+  5. Build signal summary + outreach mapping
+  6. Send full HandoffPackage to CRM
+  7. Set session.stage = HANDOFF
 """
 import structlog
 from typing import Any
 
+from app.config import get_settings
 from app.domain.conversation.session import SessionStage
-from app.domain.conversation.prompts import build_handoff_closing_prompt
 from app.domain.scoring.scorer import RuleBasedScorer
+from app.domain.scoring.thresholds import compute_threshold
+from app.domain.qualification.cta_router import (
+    CTAType,
+    QualificationPotential,
+    route_cta,
+)
 from app.domain.qualification.lead_enrichment import enrich_lead_from_extraction
 from app.domain.qualification.outreach_mapping import (
     build_outreach_payload,
     build_signal_summary,
 )
+from app.application.qualification.closing_service import (
+    generate_and_deliver,
+    resolve_calendly_url,
+)
 from app.infrastructure.redis.session_repo import SessionRepository
 from app.infrastructure.redis.score_repo import ScoreRepository
 from app.infrastructure.llm import local_llm_client
-from app.infrastructure.llm.groq_client import complete_chat
 from app.infrastructure.crm.webhook_client import send_to_crm
 from app.infrastructure.crm.rest_client import (
     fetch_company_ai_config,
@@ -45,7 +55,11 @@ class HandoffHandler:
         self._session_repo = session_repo
         self._score_repo = score_repo
 
-    async def handle(self, session_id: str) -> dict[str, Any]:
+    async def handle(
+        self,
+        session_id: str,
+        cta_type_override: CTAType | None = None,
+    ) -> dict[str, Any]:
         session = await self._session_repo.get(session_id)
         if session is None:
             return {"error": "session_not_found"}
@@ -115,22 +129,86 @@ class HandoffHandler:
         except Exception as exc:
             log.warning("reasoning_report_failed_handoff", session_id=session_id, error=str(exc))
 
-        # ── Send closing message via Groq ────────────────────────────────────
+        # ── Read composite breakdown (used by CTA router AND signal summary) ─
+        composite_breakdown: dict | None = None
         try:
-            session_messages = [
-                {"role": m.role, "content": m.content}
-                for m in (session.messages or [])
-            ]
-            closing_prompt = build_handoff_closing_prompt(
+            last_score_data = await self._score_repo.get_latest(session_id)
+            if last_score_data and isinstance(last_score_data, dict):
+                composite_breakdown = last_score_data.get("composite")
+        except Exception:
+            pass
+
+        # ── Resolve CTA ─────────────────────────────────────────────────────
+        settings = get_settings()
+        meeting_url = resolve_calendly_url(company_config)
+
+        if cta_type_override is not None:
+            cta_type = cta_type_override
+            # Map override to a reasonable potential label.
+            potential = {
+                CTAType.CYPRUS_VISIT: QualificationPotential.HIGH,
+                CTAType.CALENDLY: QualificationPotential.MEDIUM,
+                CTAType.NURTURE: QualificationPotential.LOW,
+            }.get(cta_type, QualificationPotential.HIGH)
+        else:
+            project_type = lead_json.get("project_type", "") if lead_json else ""
+            budget_range = lead_json.get("budget_range", "") if lead_json else ""
+            visit_threshold = compute_threshold(
+                project_type=project_type,
+                budget_range=budget_range,
                 company_config=company_config,
-                lead_json=lead_json,
-                messages=session_messages,
             )
-            messages = [{"role": "system", "content": closing_prompt}]
-            closing_msg = await complete_chat(messages)
-            log.info("groq_closing_sent", session_id=session_id, msg=closing_msg[:80])
-        except Exception as exc:
-            log.warning("groq_closing_failed", session_id=session_id, error=str(exc))
+            engagement_score = int((composite_breakdown or {}).get("engagement_score", 0))
+            neg_list = (composite_breakdown or {}).get("negative_signals", []) or []
+            if champ_json and not neg_list:
+                neg_list = champ_json.get("negative_signals", []) or []
+            negative_signal_count = len(neg_list)
+            dominant_intent = None
+            if champ_json:
+                dominant_intent = (
+                    (champ_json.get("message_analysis") or {}).get("intent")
+                    or champ_json.get("dominant_intent")
+                )
+            judge_recommendation = None
+            if champ_json:
+                judge_recommendation = champ_json.get("cta_recommendation") or None
+
+            cta_type, potential = route_cta(
+                score=score,
+                visit_threshold=visit_threshold,
+                medium_floor=int(settings.cta_medium_floor),
+                engagement_score=engagement_score,
+                negative_signal_count=negative_signal_count,
+                dominant_intent=dominant_intent,
+                judge_recommendation=judge_recommendation,
+            )
+
+        # Meeting URL only populated for the Calendly variant.
+        resolved_meeting_url = meeting_url if cta_type == CTAType.CALENDLY else None
+
+        log.info(
+            "handoff_cta_routed",
+            session_id=session_id,
+            cta_type=cta_type.value,
+            qualification_potential=potential.value,
+            score=score,
+        )
+
+        # ── Generate closing message + deliver to WhatsApp ──────────────────
+        wa_credentials: tuple[str, str, str] | None = None
+        if session.wa_instance_id and session.wa_api_token and session.wa_chat_id:
+            wa_credentials = (
+                session.wa_instance_id,
+                session.wa_api_token,
+                session.wa_chat_id,
+            )
+        closing_msg = await generate_and_deliver(
+            session=session,
+            company_config=company_config,
+            cta_type=cta_type,
+            meeting_url=resolved_meeting_url,
+            wa_credentials=wa_credentials,
+        )
 
         # ── WhatsApp lead qualify oldu — şimdi CRM'de customer + lead oluştur ─
         source = lead_json.get("source", "")
@@ -162,15 +240,6 @@ class HandoffHandler:
         enriched_lead = enrich_lead_from_extraction(lead_json, champ_json, msg_dicts)
 
         # ── Build signal summary for sales team ──────────────────────────────
-        # Get last composite result from score repo if available
-        composite_breakdown: dict | None = None
-        try:
-            last_score_data = await self._score_repo.get_latest(session_id)
-            if last_score_data and isinstance(last_score_data, dict):
-                composite_breakdown = last_score_data.get("composite")
-        except Exception:
-            pass
-
         signal_summary = build_signal_summary(champ_json, composite_breakdown, msg_dicts)
 
         # ── Build outreach mapping (LeadOutreach-compatible) ─────────────────
@@ -205,6 +274,10 @@ class HandoffHandler:
             "signal_summary": signal_summary,
             "composite_breakdown": composite_breakdown,
             "outreach": outreach,
+            "cta_type": cta_type.value,
+            "meeting_url": resolved_meeting_url,
+            "qualification_potential": potential.value,
+            "closing_message": closing_msg,
         }
 
         success = await send_to_crm(handoff, self._session_repo, fallback_url=fallback_url)
@@ -242,18 +315,45 @@ class HandoffHandler:
                     await pool.execute(
                         """
                         INSERT INTO qualifier_handoffs
-                          (session_id, lead_id, company_id, final_score, reasoning_json, champ_json, crm_sent, sent_at)
-                        VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, now())
+                          (session_id, lead_id, company_id, final_score,
+                           reasoning_json, champ_json, crm_sent, sent_at,
+                           cta_type, meeting_url, qualification_potential)
+                        VALUES ($1::uuid, $2::uuid, $3::uuid, $4,
+                                $5, $6, $7, now(),
+                                $8, $9, $10)
                         ON CONFLICT DO NOTHING
                         """,
                         session_id, lead_db_id, cid, score,
                         _json.dumps(reasoning_json) if reasoning_json else None,
                         _json.dumps(champ_json, ensure_ascii=False) if champ_json else None,
                         success,
+                        cta_type.value,
+                        resolved_meeting_url,
+                        potential.value,
                     )
-                    log.info("handoff_db_recorded", lead_db_id=lead_db_id, score=score, crm_sent=success)
+                    log.info(
+                        "handoff_db_recorded",
+                        lead_db_id=lead_db_id,
+                        score=score,
+                        crm_sent=success,
+                        cta_type=cta_type.value,
+                    )
         except Exception as exc:
             log.warning("handoff_status_update_failed", error=str(exc))
 
-        log.info("handoff_complete", session_id=session_id, score=score, crm_sent=success)
-        return {"status": "handoff_complete", "session_id": session_id, "crm_sent": success}
+        log.info(
+            "handoff_complete",
+            session_id=session_id,
+            score=score,
+            crm_sent=success,
+            cta_type=cta_type.value,
+            qualification_potential=potential.value,
+        )
+        return {
+            "status": "handoff_complete",
+            "session_id": session_id,
+            "crm_sent": success,
+            "cta_type": cta_type.value,
+            "qualification_potential": potential.value,
+            "meeting_url": resolved_meeting_url,
+        }
