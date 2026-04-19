@@ -44,6 +44,8 @@ class SessionRepository:
             data["fallback_url"] = session.fallback_url
         if session.company_id:
             data["company_id"] = session.company_id
+        if session.crm_lead_id:
+            data["crm_lead_id"] = session.crm_lead_id
 
         pipe = self._r.pipeline()
         pipe.hset(key, mapping=data)
@@ -73,6 +75,7 @@ class SessionRepository:
             created_at=float(data.get("created_at", 0.0)),
             fallback_url=data.get("fallback_url") or None,
             company_id=data.get("company_id", ""),
+            crm_lead_id=data.get("crm_lead_id", ""),
         )
 
     async def update_score(self, session_id: str, score: int) -> None:

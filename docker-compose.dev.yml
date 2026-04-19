@@ -1,0 +1,96 @@
+# Development stack — full dependencies included.
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Creates: qualifier-db (pg17+pgvector), qualifier-redis, one-shot migrate,
+# api container, and joins shared `lisent-dev-network` so the qualifier can
+# reach the dev CRM service at http://lisent-dev-crm-service:9090.
+
+services:
+  qualifier-db:
+    image: pgvector/pgvector:pg17
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: lead_qualifier
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-qualifierpass}
+    volumes:
+      - qualifier-db-data:/var/lib/postgresql/data
+      - ./scripts/db_init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d lead_qualifier"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  qualifier-redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+      --appendonly yes --appendfsync everysec
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    volumes:
+      - qualifier-redis-data:/data
+
+  qualifier-migrate:
+    image: postgres:17-alpine
+    depends_on:
+      qualifier-db:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      DATABASE_URL: postgresql://app:${DB_PASSWORD:-qualifierpass}@qualifier-db:5432/lead_qualifier
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["/scripts/migrate.sh"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      qualifier-db:
+        condition: service_healthy
+      qualifier-redis:
+        condition: service_healthy
+      qualifier-migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      DATABASE_URL: postgresql://app:${DB_PASSWORD:-qualifierpass}@qualifier-db:5432/lead_qualifier
+      REDIS_DSN: redis://qualifier-redis:6379/0
+      CRM_BASE_URL: ${CRM_BASE_URL:-http://lisent-dev-crm-service:9090}
+      CRM_API_KEY: ${CRM_API_KEY:-dev-crm-internal-api-key}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-crm-internal-api-key}
+      RAG_WEBHOOK_ENABLED: ${RAG_WEBHOOK_ENABLED:-true}
+      QUALIFIER_CRM_WRITETHROUGH_ENABLED: ${QUALIFIER_CRM_WRITETHROUGH_ENABLED:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - default
+      - lisent-dev-network
+
+volumes:
+  qualifier-db-data:
+  qualifier-redis-data:
+
+networks:
+  lisent-dev-network:
+    name: lisent-dev-network
+    external: true

@@ -1,59 +1,51 @@
 services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    env_file: .env
-    environment:
-      - REDIS_DSN=redis://redis:6379/0
-      - DATABASE_URL=postgresql://app:${DB_PASSWORD:-qualifierpass}@db:5432/lead_qualifier
-    depends_on:
-      redis:
-        condition: service_healthy
-      db:
-        condition: service_healthy
+  ai-lead-qualifier:
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    networks:
-      - default
-      - dokploy-network
-
-  redis:
-    image: redis:7.4-alpine
-    ports:
-      - "6379:6379"
-    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru --appendonly yes --appendfsync everysec
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-
-  db:
-    image: pgvector/pgvector:pg17
-    ports:
-      - "5433:5432"
     environment:
-      POSTGRES_DB: lead_qualifier
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-qualifierpass}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-      - ./scripts/db_init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app -d lead_qualifier"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
+      APP_ENV: production
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8000"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
-volumes:
-  redis_data:
-  pg_data:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_DSN: ${REDIS_DSN}
+
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      GROQ_TIMEOUT_SECONDS: ${GROQ_TIMEOUT_SECONDS:-5}
+      GROQ_MAX_TOKENS: ${GROQ_MAX_TOKENS:-4096}
+
+      LOCAL_LLM_URL: ${LOCAL_LLM_URL:-http://host.docker.internal:8080}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen3.5-9b}
+      LOCAL_LLM_TIMEOUT_CHAMP: ${LOCAL_LLM_TIMEOUT_CHAMP:-60}
+      LOCAL_LLM_TIMEOUT_REASONING: ${LOCAL_LLM_TIMEOUT_REASONING:-45}
+
+      CRM_BASE_URL: ${CRM_BASE_URL}
+      CRM_API_KEY: ${CRM_API_KEY}
+      CRM_WEBHOOK_URL: ${CRM_WEBHOOK_URL}
+      CRM_WEBHOOK_TOKEN: ${CRM_WEBHOOK_TOKEN}
+      CRM_WEBHOOK_TIMEOUT: ${CRM_WEBHOOK_TIMEOUT:-10}
+
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      WHATSAPP_WEBHOOK_TOKEN: ${WHATSAPP_WEBHOOK_TOKEN}
+      GREENAPI_BASE_URL: ${GREENAPI_BASE_URL:-https://api.green-api.com}
+      GREENAPI_REPLY_TIMEOUT: ${GREENAPI_REPLY_TIMEOUT:-8}
+
+      HIGH_THRESHOLD: ${HIGH_THRESHOLD:-80}
+      CHAMP_EXTRACT_EVERY_N_MESSAGES: ${CHAMP_EXTRACT_EVERY_N_MESSAGES:-3}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-86400}
+
+      QUALIFICATION_JUDGE_MODEL: ${QUALIFICATION_JUDGE_MODEL:-llama-3.3-70b-versatile}
+      QUALIFIER_CRM_WRITETHROUGH_ENABLED: ${QUALIFIER_CRM_WRITETHROUGH_ENABLED:-true}
+      QUALIFIER_LEGACY_API_ENABLED: ${QUALIFIER_LEGACY_API_ENABLED:-true}
+      RAG_WEBHOOK_ENABLED: ${RAG_WEBHOOK_ENABLED:-false}
+    networks:
+      - dokploy-network
 
 networks:
   dokploy-network:

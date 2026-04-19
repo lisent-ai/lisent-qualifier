@@ -20,6 +20,8 @@ from app.api.health.router import router as health_router
 from app.api.whatsapp.router import router as whatsapp_router
 from app.api.leads.router import router as leads_router
 from app.api.sessions.router import router as sessions_router
+from app.api.rag.router import router as rag_router
+from app.api.middleware.request_id import RequestIDMiddleware
 
 import logging
 import sys
@@ -143,6 +145,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Correlation ID — first middleware so it wraps every other.
+    app.add_middleware(RequestIDMiddleware)
+
     # Routers
     app.include_router(health_router)
     app.include_router(webhook_router)
@@ -150,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(whatsapp_router)
     app.include_router(leads_router)
     app.include_router(sessions_router)
+    app.include_router(rag_router)
 
     # Prometheus metrics endpoint
     metrics_app = make_asgi_app()

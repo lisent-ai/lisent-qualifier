@@ -1,0 +1,26 @@
+# One-shot migration runner. Applies scripts/migrations/*.sql to the
+# database pointed to by DATABASE_URL.
+#
+# Production (Dokploy): create a separate Compose application named
+# `qualifier-migrate`, set DATABASE_URL to the internal Postgres DNS, deploy.
+# Container exits after migrations run (restart: "no").
+#
+# Local: use docker-compose.dev.yml which includes a migrate service wired
+# to the dev database.
+
+services:
+  migrate:
+    image: postgres:17-alpine
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["/scripts/migrate.sh"]
+    restart: "no"
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true

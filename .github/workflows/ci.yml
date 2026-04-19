@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  python:
+    name: Lint, type-check, test, audit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: lead_qualifier
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: qualifierpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d lead_qualifier"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install project + dev deps
+        run: uv pip install -e ".[dev]" --system
+
+      - name: Ruff (lint)
+        run: ruff check .
+
+      - name: Ruff (format check)
+        run: ruff format --check .
+
+      - name: Mypy (type check)
+        run: mypy app
+        continue-on-error: true
+
+      - name: Apply migrations (dry run)
+        env:
+          DATABASE_URL: postgresql://app:qualifierpass@localhost:5432/lead_qualifier
+        run: ./scripts/migrate.sh
+
+      - name: Pytest with coverage
+        env:
+          DATABASE_URL: postgresql://app:qualifierpass@localhost:5432/lead_qualifier
+          REDIS_DSN: redis://localhost:6379/0
+        run: pytest --cov=app --cov-report=term --cov-report=xml tests/
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-python
+          path: coverage.xml
+
+      - name: Pip audit
+        run: pip install pip-audit && pip-audit
+        continue-on-error: true
+
+      - name: Bandit (SAST)
+        run: |
+          pip install bandit[sarif]
+          bandit -r app -f sarif -o bandit.sarif || true
+
+      - name: Upload Bandit SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: bandit.sarif
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  container-scan:
+    name: Trivy container scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image
+        run: docker build -t ai-lead-qualifier:ci .
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ai-lead-qualifier:ci
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 0
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy.sarif

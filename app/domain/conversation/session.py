@@ -33,3 +33,9 @@ class ConversationSession:
     created_at: float = field(default_factory=lambda: datetime.utcnow().timestamp())
     fallback_url: str | None = None
     company_id: str = ""
+    # CRM lead row this session writes through to. Populated when the
+    # QUALIFIER_CRM_WRITETHROUGH_ENABLED flag is on and the initial
+    # create_or_upsert_lead call succeeds. Empty string means no CRM mirror
+    # exists yet — downstream updates must be skipped (never send a PATCH with
+    # an empty id).
+    crm_lead_id: str = ""

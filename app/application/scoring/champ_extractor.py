@@ -24,6 +24,7 @@ from app.domain.scoring.signals.registry import SignalRegistry
 from app.infrastructure.redis.session_repo import SessionRepository
 from app.infrastructure.redis.score_repo import ScoreRepository
 from app.infrastructure.llm import local_llm_client
+from app.application.crm_sync import try_update_ai_metadata
 from app.metrics import CHAMP_EXTRACTIONS, HANDOFF_COUNTER, SCORING_MODE_COMPARISON
 
 log = structlog.get_logger(__name__)
@@ -161,6 +162,22 @@ async def extract_champ_task(
         # ── Update session ───────────────────────────────────────────────
         await session_repo.update_champ(session_id, champ_json, new_score)
         await score_repo.record(session_id, new_score)
+
+        # ── CRM write-through: mirror the new score + champ into CRM ────
+        champ_breakdown = {
+            "challenges": champ_json.get("challenges_score", 0),
+            "authority": champ_json.get("authority_score", 0),
+            "money": champ_json.get("money_score", 0),
+            "prioritization": champ_json.get("prioritization_score", 0),
+            "total": new_score,
+        }
+        await try_update_ai_metadata(
+            session.crm_lead_id or "",
+            score=new_score,
+            champ=champ_json,
+            score_breakdown=champ_breakdown,
+            idempotency_key=f"champ-{session_id}-{session.msg_count}",
+        )
 
         log.info(
             "extraction_completed",

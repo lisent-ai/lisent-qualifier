@@ -307,3 +307,125 @@ async def create_lead(
     except Exception as exc:
         log.error("crm_lead_create_failed", error=str(exc))
         return None
+
+
+async def create_or_upsert_lead(
+    company_id: str,
+    lead_data: dict,
+    qualifier_external_ref: str,
+) -> Optional[dict]:
+    """
+    CRM'de lead yaratır. ``qualifier_external_ref`` aynı company için idempotent
+    dedup anahtarıdır; aynı ref ile gelen retry'da mevcut lead döner.
+
+    ``lead_data`` şu alanları kabul eder: customer_id, name, email, phone, notes,
+    source, status, assignee_user_id, assignee_user_name, assignment_method,
+    value, extra_data. extra_data.qualifier_external_ref otomatik set edilir.
+    """
+    if not qualifier_external_ref:
+        raise ValueError("qualifier_external_ref is required for idempotent create")
+
+    payload = dict(lead_data)
+    payload["company_id"] = company_id
+    extra = dict(payload.get("extra_data") or {})
+    extra["qualifier_external_ref"] = qualifier_external_ref
+    payload["extra_data"] = extra
+
+    try:
+        client = _get_crm_rest_client()
+        resp = await client.post(
+            "/leads",
+            json=payload,
+            headers={"X-Idempotency-Key": f"lead-create-{qualifier_external_ref}"},
+        )
+        if resp.status_code in (200, 201):
+            return resp.json()
+        resp.raise_for_status()
+        return resp.json()
+    except RuntimeError as exc:
+        log.error("crm_rest_not_configured", error=str(exc))
+        return None
+    except Exception as exc:
+        log.error(
+            "crm_lead_upsert_failed",
+            error=str(exc),
+            company_id=company_id,
+            external_ref=qualifier_external_ref,
+        )
+        return None
+
+
+async def update_lead_ai_metadata(
+    lead_id: str,
+    ai_payload: dict,
+    idempotency_key: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    CRM leads.ai_* kolonlarını günceller. Idempotent; aynı idempotency_key ile
+    gelen retry aynı sonucu döner.
+
+    ``ai_payload`` kabul edilen alanlar: ai_score, ai_status, ai_session_id,
+    ai_champ, ai_reasoning, ai_score_breakdown, ai_last_scored_at, ai_path, actor.
+    """
+    try:
+        client = _get_crm_rest_client()
+        headers: dict[str, str] = {}
+        if idempotency_key:
+            headers["X-Idempotency-Key"] = idempotency_key
+        resp = await client.patch(
+            f"/internal/leads/{lead_id}/ai-metadata",
+            json=ai_payload,
+            headers=headers or None,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except RuntimeError as exc:
+        log.error("crm_rest_not_configured", error=str(exc))
+        return None
+    except Exception as exc:
+        log.error(
+            "crm_ai_metadata_update_failed",
+            error=str(exc),
+            lead_id=lead_id,
+            idempotency_key=idempotency_key,
+        )
+        return None
+
+
+async def fetch_lead_by_external_ref(
+    company_id: str,
+    external_ref: str,
+) -> Optional[dict]:
+    """
+    CRM'de ``extra_data.qualifier_external_ref`` ile eşleşen lead'i döner.
+    Bulamazsa None.
+    """
+    try:
+        client = _get_crm_rest_client()
+        resp = await client.get(
+            "/leads",
+            params={
+                "company_id": company_id,
+                "q": external_ref,
+                "limit": 50,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("data") or []
+        for item in items:
+            extra = (item or {}).get("extra_data") or {}
+            if extra.get("qualifier_external_ref") == external_ref:
+                return item
+        return None
+    except RuntimeError as exc:
+        log.error("crm_rest_not_configured", error=str(exc))
+        return None
+    except Exception as exc:
+        log.error(
+            "crm_lead_by_ref_fetch_failed",
+            error=str(exc),
+            company_id=company_id,
+            external_ref=external_ref,
+        )
+        return None

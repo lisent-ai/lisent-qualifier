@@ -224,6 +224,34 @@ class ConversationHandler:
             except Exception as exc:
                 log.warning("kb_documents_fetch_failed", error=str(exc))
 
+        # Faz 6 — similarity search the per-company RAG knowledge base for
+        # the most recent user turn. Injected into kb_documents_content so
+        # the prompt builder renders it alongside any pre-loaded KB content.
+        if session.company_id and company_config is not None:
+            try:
+                recent_user_msg = next(
+                    (m.content for m in reversed(session.messages) if m.role == "user"),
+                    None,
+                )
+                if recent_user_msg:
+                    from app.infrastructure.rag import repository as _kb_repo
+
+                    hits = await _kb_repo.search_chunks(
+                        session.company_id, recent_user_msg, top_k=3
+                    )
+                    if hits:
+                        rag_block = "\n\n---\n\n".join(
+                            f"[{c.title or c.doc_ref}]\n{c.content}" for c in hits
+                        )
+                        existing_kb = company_config.get("kb_documents_content", "")
+                        separator = "\n\n---\n\n" if existing_kb else ""
+                        company_config = {
+                            **company_config,
+                            "kb_documents_content": (existing_kb + separator + rag_block)[:8000],
+                        }
+            except Exception as exc:
+                log.warning("rag_retrieval_failed", error=str(exc))
+
         # Fetch webhook data and merge into KB content
         if session.company_id and company_config is not None:
             try:

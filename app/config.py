@@ -72,6 +72,11 @@ class Settings(BaseSettings):
         "Teşekkürler! Uzman ekibimiz en kısa sürede sizinle iletişime geçecek."
     )
 
+    # Feature flags
+    qualifier_crm_writethrough_enabled: bool = Field(default=False)
+    qualifier_legacy_api_enabled: bool = Field(default=True)
+    rag_webhook_enabled: bool = Field(default=False)
+
 
 _settings: Settings | None = None
 

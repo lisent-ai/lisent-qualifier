@@ -29,6 +29,7 @@ from app.infrastructure.crm.rest_client import (
     find_or_create_customer,
     create_lead,
 )
+from app.application.crm_sync import try_update_ai_metadata
 from app.metrics import CRM_SEND_COUNTER
 
 log = structlog.get_logger(__name__)
@@ -198,6 +199,27 @@ class HandoffHandler:
             "composite_breakdown": composite_breakdown,
             "outreach": outreach,
         }
+
+        # CRM write-through: promote lead to qualified + attach reasoning/champ
+        champ_breakdown: dict[str, Any] | None = None
+        if champ_json:
+            champ_breakdown = {
+                "challenges": champ_json.get("challenges_score", 0),
+                "authority": champ_json.get("authority_score", 0),
+                "money": champ_json.get("money_score", 0),
+                "prioritization": champ_json.get("prioritization_score", 0),
+                "total": score,
+            }
+        await try_update_ai_metadata(
+            session.crm_lead_id or "",
+            score=score,
+            status="qualified",
+            champ=champ_json,
+            reasoning=reasoning_json,
+            score_breakdown=champ_breakdown,
+            path="chat",
+            idempotency_key=f"handoff-{session_id}",
+        )
 
         success = await send_to_crm(handoff, self._session_repo, fallback_url=fallback_url)
         CRM_SEND_COUNTER.labels(path="chat", success=str(success)).inc()
