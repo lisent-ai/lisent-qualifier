@@ -272,6 +272,31 @@ class MessageAnalyzer:
     ) -> str:
         msg_stripped = message.strip()
         msg_len = len(msg_stripped)
+        lower = msg_stripped.lower()
+
+        low_value_phrases = (
+            "hangi şirketten",
+            "hangi sirketten",
+            "hangi şirket",
+            "hangi sirket",
+            "iyiyim",
+            "teşekkür",
+            "tesekkur",
+            "nasılsınız",
+            "nasilsiniz",
+            "yok",
+            "yani",
+            "olur",
+            "tamam",
+            "evet",
+            "bilmiyorum",
+            "çok bilmiyorum",
+            "cok bilmiyorum",
+            "bilgi sahibi değilim",
+            "bilgi sahibi degilim",
+        )
+        if any(phrase in lower for phrase in low_value_phrases) and msg_len < 80:
+            return "low"
 
         # Has buying signals or high intent → high
         if buying_signals or intent_result.intent == "high_intent":
@@ -345,6 +370,12 @@ class MessageAnalyzer:
         champ_dims: list[str],
     ) -> tuple[bool, str]:
         """Decide whether to trigger CHAMP extraction for this message."""
+        # Early conversation guard:
+        # Avoid triggering extraction in the first 3 user messages unless
+        # the message contains very strong purchase/financial signals.
+        if msg_count <= 3 and information_value != "high" and intent != "buying_signal":
+            return False, "early_conversation_guard"
+
         # Safety net: ALWAYS trigger on periodic N
         if msg_count % extract_every_n == 0:
             return True, f"periodic_{extract_every_n}"

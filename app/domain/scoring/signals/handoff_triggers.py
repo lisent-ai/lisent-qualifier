@@ -1,38 +1,27 @@
 """Layer 1: Instant programmatic handoff triggers.
 
-Runs on EVERY inbound message, <1ms latency, zero LLM cost.
-Returns (should_handoff, reason) tuple for immediate routing decisions.
+Runs on every inbound message with zero LLM cost.
+Returns simple booleans for immediate routing decisions.
 """
 
 INSTANT_HANDOFF_TR: list[str] = [
     "insan istiyorum",
     "gercek kisi",
-    "gerçek kişi",
     "biriyle gorusmek",
-    "biriyle görüşmek",
     "yetkili ile",
     "mudur ile",
-    "müdür ile",
     "temsilci ile",
     "goruselim",
-    "görüşelim",
     "toplanti",
-    "toplantı",
     "randevu",
     "yuz yuze",
-    "yüz yüze",
     "ofise geleyim",
     "ziyaret",
     "sozlesme",
-    "sözleşme",
     "kontrat",
     "teklif gonderin",
-    "teklif gönderin",
     "ne zaman baslayabiliriz",
-    "ne zaman başlayabiliriz",
     "hemen baslamak",
-    "hemen başlamak",
-    "acil",
 ]
 
 INSTANT_HANDOFF_EN: list[str] = [
@@ -48,14 +37,12 @@ INSTANT_HANDOFF_EN: list[str] = [
     "proposal",
     "when can we start",
     "let's get started",
-    "urgent",
 ]
 
 VIP_BYPASS_TR: list[str] = [
     "ihale",
     "rfp",
     "teklif dosyasi",
-    "teklif dosyası",
     "resmi talep",
 ]
 
@@ -69,26 +56,13 @@ VIP_BYPASS_EN: list[str] = [
 
 CONVERSATION_END_TR: list[str] = [
     "gorusuruz",
-    "görüşürüz",
     "hosca kalin",
-    "hoşça kalın",
     "iyi gunler",
-    "iyi günler",
     "iyi aksamlar",
-    "iyi akşamlar",
     "tamam tesekkurler",
-    "tamam teşekkürler",
     "tamamdir",
     "tamam sagol",
-    "tamam sağol",
-    "baska sorum yok",
-    "başka sorum yok",
     "yeterli tesekkurler",
-    "yeterli teşekkürler",
-    "ben dusuneyim",
-    "ben düşüneyim",
-    "daha sonra donerim",
-    "daha sonra dönerim",
 ]
 
 CONVERSATION_END_EN: list[str] = [
@@ -97,22 +71,31 @@ CONVERSATION_END_EN: list[str] = [
     "thanks bye",
     "thank you bye",
     "have a good day",
-    "no more questions",
     "that's all",
-    "i'll think about it",
-    "i will get back to you",
     "talk to you later",
     "thanks for the info",
 ]
 
+SOFT_PAUSE_TR: list[str] = [
+    "ben dusuneyim",
+    "bir dusuneyim",
+    "sonra bakariz",
+    "daha sonra donerim",
+    "evleri goreyim",
+]
 
-def check_instant_handoff(
-    message: str, language: str = "tr"
-) -> tuple[bool, str]:
-    """Check message for instant handoff triggers.
+SOFT_PAUSE_EN: list[str] = [
+    "i'll think about it",
+    "i will think about it",
+    "let me think about it",
+    "i'll get back to you",
+    "i will get back to you",
+    "let me review it",
+]
 
-    Returns (should_handoff, reason). Runs on EVERY message, <1ms.
-    """
+
+def check_instant_handoff(message: str, language: str = "tr") -> tuple[bool, str]:
+    """Check message for instant handoff triggers."""
     msg_lower = message.lower()
 
     triggers = INSTANT_HANDOFF_TR if language == "tr" else INSTANT_HANDOFF_EN
@@ -121,22 +104,33 @@ def check_instant_handoff(
             return True, f"instant_trigger:{trigger}"
 
     vip = VIP_BYPASS_TR if language == "tr" else VIP_BYPASS_EN
-    for v in vip:
-        if v in msg_lower:
-            return True, f"vip_bypass:{v}"
+    for value in vip:
+        if value in msg_lower:
+            return True, f"vip_bypass:{value}"
+
+    urgent_phrases = (
+        ("acil", "yetkili", "temsilci", "gorus", "ara", "arayin")
+        if language == "tr"
+        else ("urgent", "agent", "person", "call", "speak", "contact")
+    )
+    if urgent_phrases[0] in msg_lower and any(token in msg_lower for token in urgent_phrases[1:]):
+        return True, f"instant_trigger:{urgent_phrases[0]}"
 
     return False, ""
 
 
-def check_conversation_end(
-    message: str, language: str = "tr"
-) -> tuple[bool, str]:
-    """Check if user is ending the conversation (goodbye, thanks, etc.).
+def check_conversation_end(message: str, language: str = "tr") -> tuple[bool, str]:
+    """Check if user is explicitly ending the conversation.
 
-    Returns (is_ending, reason). Separate from instant handoff —
-    this triggers a force extraction + handoff with collected data.
+    Soft deferment such as "I'll think about it" should not force a handoff.
+    Those cases stay in nurture mode and are handled by normal conversation flow.
     """
     msg_lower = message.lower().strip()
+
+    soft_pauses = SOFT_PAUSE_TR if language == "tr" else SOFT_PAUSE_EN
+    for phrase in soft_pauses:
+        if phrase in msg_lower:
+            return False, ""
 
     endings = CONVERSATION_END_TR if language == "tr" else CONVERSATION_END_EN
     for ending in endings:

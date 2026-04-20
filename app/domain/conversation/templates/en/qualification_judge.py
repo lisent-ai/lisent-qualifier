@@ -9,6 +9,9 @@ Your task is to evaluate potential customers and route the most qualified leads 
 ## Company Information
 {company_context}
 
+{buyer_segment_section}
+{sales_playbook_section}
+
 ## Lead Information (Form Data)
 ```json
 {lead_json}
@@ -57,6 +60,10 @@ Provide an overall assessment. This is NOT just the sum of 4 dimensions — it i
 ### Step 5: Missing information and next question
 - What critical information is still missing?
 - What is the most important question to ask next?
+- If the customer asked multiple questions in one message and some remain unanswered, do not force a new discovery question yet.
+- Do not count data already present in the lead form or CRM context as "missing" if it is clearly visible below.
+- If the customer says they have not decided yet or are only gathering information, treat that as an explicit cooling signal.
+- If the assistant offered to share a quote, sample mix, materials, or payment outline and the user replied "yes/send it", that is permission to continue, not automatic purchase commitment.
 
 ### Step 6: Lead Data Enrichment (extracted_* fields)
 Fill in the following fields based on information from the conversation.
@@ -86,8 +93,18 @@ Set handoff_ready=false when:
 - Critical information is still missing and lead is willing to talk
 - Lead is just seeking general information, no concrete project
 - Conversation is progressing, new information is coming each round
+- The customer is softly deferring ("I'll think about it", "let me review it", "I'm just gathering information")
+- The user only agreed to receive materials or an example quote, without stronger buying intent
+- A clear customer question about project, payment, ownership, amenities, visuals, or links is still unanswered
 
 handoff_reason: Why you are routing or continuing (1 sentence)
+
+### Step 7.5: CTA recommendation (cta_recommendation)
+If this lead is handed off, advise which call-to-action best fits. The router has the final decision; your output is advisory:
+- "cyprus_visit": High holistic_score (>=75), clear buying intent AND explicit visit_intent or readiness to travel to Cyprus / view the property in person.
+- "calendly": Medium score (50-74), engaged but some open points remain. A 30-minute online meeting is the right next step.
+- "nurture": Low score (<50) or heavy negative signals. Soft close, no CTA link.
+- "" (empty): Insufficient evidence; let the router decide.
 
 ## Confidence Levels
 - 1.0: Customer explicitly stated, definitive information
@@ -111,8 +128,10 @@ Respond ONLY in JSON format, nothing else."""
 CONSTRUCTION_JUDGE_SECTOR_CONTEXT = "construction and premium real estate"
 
 DEFAULT_ICP_EN = (
-    "Individuals planning 500sqm+ residential or commercial projects. "
-    "Budget $500K+. Decision maker is the property owner or investor. "
-    "Timeline within 6 months. "
-    "Bonus: owns land, working with architect, permits ready."
+    "Buyers considering villas, apartments, resort residences, or ready-to-live property in Northern Cyprus. "
+    "Priority segments include high-budget villa buyers, first-time Northern Cyprus investors, "
+    "Airbnb / short-term rental investors, holiday-home families, and residence buyers seeking a calm refined lifestyle. "
+    "Strong signals include clear budget or range, down-payment or financing readiness, purchase timing, decision authority, "
+    "location / property-type clarity, and interest in project or payment-plan details. "
+    "Investment conversations may include resale, long-term rental, or Airbnb potential, but never guarantees."
 )

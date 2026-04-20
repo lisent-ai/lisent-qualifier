@@ -1,1 +1,6 @@
 /models/
+__pycache__/
+*.pyc
+.prompt_simulator.pid
+prompt_simulator.*.log
+Untitled

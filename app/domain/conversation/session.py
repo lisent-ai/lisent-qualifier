@@ -39,3 +39,8 @@ class ConversationSession:
     # exists yet — downstream updates must be skipped (never send a PATCH with
     # an empty id).
     crm_lead_id: str = ""
+    # WhatsApp delivery credentials (populated for WhatsApp-origin sessions so
+    # the handoff handler can deliver the closing message back to the user).
+    wa_instance_id: str = ""
+    wa_api_token: str = ""
+    wa_chat_id: str = ""

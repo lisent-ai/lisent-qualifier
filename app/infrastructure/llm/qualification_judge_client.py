@@ -48,6 +48,8 @@ def _build_judge_prompt(
         lead_json=lead_json,
         current_judgment_json=current_judgment_json,
         company_config=company_config,
+        language=language,
+        sector=sector,
     )
 
     return [{"role": "system", "content": system_prompt}]

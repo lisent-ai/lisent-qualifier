@@ -46,6 +46,12 @@ class SessionRepository:
             data["company_id"] = session.company_id
         if session.crm_lead_id:
             data["crm_lead_id"] = session.crm_lead_id
+        if session.wa_instance_id:
+            data["wa_instance_id"] = session.wa_instance_id
+        if session.wa_api_token:
+            data["wa_api_token"] = session.wa_api_token
+        if session.wa_chat_id:
+            data["wa_chat_id"] = session.wa_chat_id
 
         pipe = self._r.pipeline()
         pipe.hset(key, mapping=data)
@@ -76,6 +82,9 @@ class SessionRepository:
             fallback_url=data.get("fallback_url") or None,
             company_id=data.get("company_id", ""),
             crm_lead_id=data.get("crm_lead_id", ""),
+            wa_instance_id=data.get("wa_instance_id", ""),
+            wa_api_token=data.get("wa_api_token", ""),
+            wa_chat_id=data.get("wa_chat_id", ""),
         )
 
     async def update_score(self, session_id: str, score: int) -> None:
@@ -90,6 +99,26 @@ class SessionRepository:
             "champ_json": json.dumps(champ_json, ensure_ascii=False),
             "score": str(score),
             "last_champ_at": str(__import__("datetime").datetime.utcnow().timestamp()),
+        })
+        pipe.expire(key, self._ttl)
+        await pipe.execute()
+
+    async def set_wa_credentials(
+        self,
+        session_id: str,
+        *,
+        instance_id: str,
+        api_token: str,
+        chat_id: str,
+    ) -> None:
+        """Cache GreenAPI credentials on the session so handoff paths can
+        deliver the closing message without a second CRM lookup."""
+        key = self._key(session_id)
+        pipe = self._r.pipeline()
+        pipe.hset(key, mapping={
+            "wa_instance_id": instance_id,
+            "wa_api_token": api_token,
+            "wa_chat_id": chat_id,
         })
         pipe.expire(key, self._ttl)
         await pipe.execute()

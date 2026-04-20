@@ -10,6 +10,7 @@ Supports three scoring modes (per company config):
 """
 import asyncio
 import json
+import re
 import time
 import structlog
 
@@ -28,6 +29,79 @@ from app.application.crm_sync import try_update_ai_metadata
 from app.metrics import CHAMP_EXTRACTIONS, HANDOFF_COUNTER, SCORING_MODE_COMPARISON
 
 log = structlog.get_logger(__name__)
+
+
+def _has_critical_missing_info(
+    champ_json: dict,
+    lead_json: dict | None = None,
+) -> bool:
+    from app.domain.conversation.prompts import resolve_buyer_segment
+
+    items = [str(item).lower() for item in (champ_json.get("missing_info") or [])]
+    if not items:
+        return False
+
+    buyer_segment = resolve_buyer_segment(lead_json or {}, None, "tr")
+    base_tokens = {"amaç", "amac", "kullanim", "kullanım", "zaman", "zamanlama", "karar", "bütçe", "butce"}
+    if buyer_segment == "generic":
+        base_tokens.add("segment")
+
+    segment_tokens = {
+        "investor": {
+            "airbnb",
+            "kira",
+            "yatırım",
+            "yatirim",
+            "finansman",
+            "roi",
+            "flip",
+            "al-sat",
+            "satmak",
+            "cikis",
+            "çıkış",
+        },
+        "holiday_home": {"kullanım", "kullanim", "kıbrıs", "kibris", "tatil", "zamanlama"},
+        "residence": {"taşınma", "tasinma", "günlük yaşam", "gunluk yasam", "mahalle", "ulaşım", "ulasim"},
+    }.get(buyer_segment, set())
+
+    tokens = base_tokens | segment_tokens
+    return any(any(token in item for token in tokens) for item in items)
+
+
+def _last_user_message_blocks_auto_handoff(messages: list) -> bool:
+    last_user = ""
+    for msg in reversed(messages or []):
+        if getattr(msg, "role", "") == "user" and getattr(msg, "content", ""):
+            last_user = str(msg.content).strip().lower()
+            break
+
+    if not last_user:
+        return False
+
+    normalized = re.sub(r"\s+", " ", last_user)
+    open_question_tokens = (
+        "?",
+        "ne ",
+        "neler var",
+        "hangi",
+        "nasıl",
+        "nasil",
+        "konum",
+        "lokasyon",
+        "fiyat",
+        "detay",
+        "bilgi",
+        "atabilir misin",
+        "gönderir misin",
+        "gonderir misin",
+        "olur mu",
+    )
+    human_followup_tokens = ("arayın", "arayin", "görüşelim", "goruselim", "randevu", "telefon", "danışman", "danisman")
+
+    if any(token in normalized for token in human_followup_tokens):
+        return False
+
+    return any(token in normalized for token in open_question_tokens)
 
 
 async def extract_champ_task(
@@ -210,18 +284,49 @@ async def extract_champ_task(
         # ── Handoff priority chain ────────────────────────────────────────
         from app.application.qualification.handler import HandoffHandler
 
+        # Minimum conversation depth: don't handoff with fewer than 6 user
+        # messages so the customer gets a real conversation and their questions
+        # are answered.  Force handoff (max messages, conversation end) bypasses.
+        min_msgs = (company_config or {}).get("min_messages_before_handoff", 6)
+        too_early = session.msg_count < min_msgs and not force_handoff
+        critical_missing = _has_critical_missing_info(champ_json, session.lead_json)
+        active_info_request = _last_user_message_blocks_auto_handoff(session.messages)
+
         # Priority 1: Judge says ready (LLM decision, independent of score)
         if scoring_mode in ("llm_judge", "hybrid") and champ_json.get("handoff_ready"):
-            log.info(
-                "judge_handoff_ready",
-                session_id=session_id,
-                score=new_score,
-                reason=champ_json.get("handoff_reason", ""),
-            )
-            HANDOFF_COUNTER.labels(path="chat_judge").inc()
-            handler = HandoffHandler(session_repo, score_repo)
-            await handler.handle(session_id)
-            return
+            if too_early:
+                log.info(
+                    "judge_handoff_blocked_too_early",
+                    session_id=session_id,
+                    score=new_score,
+                    msg_count=session.msg_count,
+                    min_msgs=min_msgs,
+                    reason=champ_json.get("handoff_reason", ""),
+                )
+            elif critical_missing:
+                log.info(
+                    "judge_handoff_blocked_missing_info",
+                    session_id=session_id,
+                    score=new_score,
+                    missing_info=champ_json.get("missing_info", []),
+                )
+            elif active_info_request:
+                log.info(
+                    "judge_handoff_blocked_active_info_request",
+                    session_id=session_id,
+                    score=new_score,
+                )
+            else:
+                log.info(
+                    "judge_handoff_ready",
+                    session_id=session_id,
+                    score=new_score,
+                    reason=champ_json.get("handoff_reason", ""),
+                )
+                HANDOFF_COUNTER.labels(path="chat_judge").inc()
+                handler = HandoffHandler(session_repo, score_repo)
+                await handler.handle(session_id)
+                return
 
         # Priority 2: Score threshold (existing logic)
         lead_json = session.lead_json or {}
@@ -233,16 +338,41 @@ async def extract_champ_task(
         )
 
         if new_score >= threshold:
-            log.info(
-                "handoff_threshold_reached",
-                session_id=session_id,
-                score=new_score,
-                threshold=threshold,
-            )
-            HANDOFF_COUNTER.labels(path="chat").inc()
-            handler = HandoffHandler(session_repo, score_repo)
-            await handler.handle(session_id)
-            return
+            if too_early:
+                log.info(
+                    "threshold_handoff_blocked_too_early",
+                    session_id=session_id,
+                    score=new_score,
+                    threshold=threshold,
+                    msg_count=session.msg_count,
+                    min_msgs=min_msgs,
+                )
+            elif critical_missing:
+                log.info(
+                    "threshold_handoff_blocked_missing_info",
+                    session_id=session_id,
+                    score=new_score,
+                    threshold=threshold,
+                    missing_info=champ_json.get("missing_info", []),
+                )
+            elif active_info_request:
+                log.info(
+                    "threshold_handoff_blocked_active_info_request",
+                    session_id=session_id,
+                    score=new_score,
+                    threshold=threshold,
+                )
+            else:
+                log.info(
+                    "handoff_threshold_reached",
+                    session_id=session_id,
+                    score=new_score,
+                    threshold=threshold,
+                )
+                HANDOFF_COUNTER.labels(path="chat").inc()
+                handler = HandoffHandler(session_repo, score_repo)
+                await handler.handle(session_id)
+                return
 
         # Priority 3: Force handoff — max messages safety net
         if force_handoff:
@@ -273,8 +403,14 @@ async def _extract_champ_path(
     if not messages_for_extraction.strip():
         return None, None
 
-    prompt = _build_extraction_prompt(
-        messages_for_extraction, session.champ_json, language, sector,
+    from app.domain.conversation.prompts import build_champ_extraction_prompt
+
+    prompt = build_champ_extraction_prompt(
+        messages_for_extraction,
+        current_champ_json=session.champ_json,
+        company_config=company_config,
+        language=language,
+        sector=sector,
     )
 
     try:
@@ -456,42 +592,6 @@ def _build_extraction_messages(session) -> str:
     return "\n".join(
         f"{m.role.upper()}: {m.content}" for m in session.messages
     )
-
-
-def _build_extraction_prompt(
-    conversation_text: str,
-    current_champ_json: dict | None,
-    language: str,
-    sector: str,
-) -> str:
-    """Build the full extraction prompt with few-shot examples and current state."""
-    from app.domain.conversation.templates.registry import TemplateRegistry
-    from app.domain.conversation.few_shots.registry import FewShotRegistry
-
-    templates = TemplateRegistry.get_templates(language, sector)
-    few_shots = FewShotRegistry.get_examples(language, sector)
-
-    # Current CHAMP state section
-    current_section = ""
-    if current_champ_json:
-        current_section = (
-            f"## Mevcut CHAMP Durumu\n"
-            f"```json\n{json.dumps(current_champ_json, ensure_ascii=False, indent=2)}\n```\n"
-            f"SADECE yeni bilgi açıklanan boyutları güncelle. "
-            f"Değişmeyen boyutları mevcut skorlarında bırak.\n"
-        )
-
-    prompt = templates.extraction.format(
-        conversation_history=conversation_text,
-        current_champ_section=current_section,
-        sector_qualifiers_instruction=templates.extraction_sector_instruction,
-    )
-
-    # Prepend few-shot examples if available
-    if few_shots:
-        prompt = few_shots + "\n\n" + prompt
-
-    return prompt
 
 
 def _hours_since_last_message(messages: list) -> float:

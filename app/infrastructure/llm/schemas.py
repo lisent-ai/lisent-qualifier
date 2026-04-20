@@ -72,12 +72,21 @@ class CHAMPExtractionResult(BaseModel):
 
 class SectorQualifiersResult(BaseModel):
     """Sector-specific qualifiers extracted alongside CHAMP."""
+    # Construction
     has_land: bool | None = None
     permit_status: str | None = None
     has_architect: bool | None = None
     budget_source: str | None = None
     competing_bids: bool | None = None
     project_sqm: int | None = None
+    # Real estate (Cyprus investor)
+    has_property_shortlist: int | bool | None = None
+    financing_ready: str | None = None
+    visit_intent: bool | None = None
+    decision_partner_aligned: bool | None = None
+    exit_strategy_clear: bool | None = None
+    property_type: str | None = None
+    location: str | None = None
 
 
 class MessageAnalysis(BaseModel):
@@ -152,6 +161,11 @@ class QualificationJudgmentResult(BaseModel):
     # Handoff decision (Layer 2 — judge decides if lead is ready for sales)
     handoff_ready: bool = False
     handoff_reason: str = ""
+
+    # CTA routing hint — advisory signal for the CTA router. The router has
+    # final say, but the judge gives the LLM's best read of which call-to-action
+    # suits the lead.
+    cta_recommendation: Literal["cyprus_visit", "calendly", "nurture", ""] = ""
 
     # Next question recommendation (replaces gap routing heuristic)
     missing_info: list[str] = Field(default_factory=list)

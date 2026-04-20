@@ -62,4 +62,13 @@ CONSTRUCTION_QUALIFIERS_INSTRUCTION = """Also extract construction sector-specif
 - competing_bids: Getting bids from other companies? (true/false/null)
 - project_sqm: Project square meters (int/null)"""
 
+REAL_ESTATE_QUALIFIERS_INSTRUCTION = """Also extract real-estate investor sector-specific information:
+- has_property_shortlist: Number of concrete projects/villas the customer has named (int/null; set to >=2 if they explicitly named two or more)
+- financing_ready: Financing readiness ("cash"/"approved"/"pending"/"none"/null)
+- visit_intent: Expressed intent to come to Cyprus and view the property in person (true/false/null)
+- decision_partner_aligned: Spouse/co-investor partner exists and is aligned? (true/false/null)
+- exit_strategy_clear: Clear rental/flip/holiday-let exit strategy? (true/false/null)
+- property_type: Property type ("studio"/"apartment"/"villa"/"land"/null)
+- location: Location of interest (e.g. "esentepe"/"girne"/"catalkoy"/null)"""
+
 GENERAL_QUALIFIERS_INSTRUCTION = ""

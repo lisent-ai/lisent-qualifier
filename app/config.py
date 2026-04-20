@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     qualifier_legacy_api_enabled: bool = Field(default=True)
     rag_webhook_enabled: bool = Field(default=False)
 
+    # CTA routing
+    default_calendly_url: str = "https://calendly.com/redif"
+    cta_medium_floor: int = Field(default=50, ge=0, le=100)
+
 
 _settings: Settings | None = None
 

@@ -1,0 +1,46 @@
+﻿[
+  {
+    "projectName": "Seaside Villas",
+    "location": "Esentepe, Kuzey Kıbrıs",
+    "projectType": "Villa",
+    "priceRange": "500,000 € - 950,000 €",
+    "features": [
+      "Deniz manzaralı",
+      "Özel havuzlu",
+      "3+1 ve 4+1 seçenekler",
+      "Sahile yürüme mesafesinde"
+    ],
+    "deliveryDate": "Haziran 2026",
+    "paymentPlan": "%35 peşinat, kalanı 36 ay taksit",
+    "investmentNote": "Yatırım ve kısa dönem kiralama için güçlü talep görüyor."
+  },
+  {
+    "projectName": "Kyrenia Heights",
+    "location": "Girne Merkez, Kuzey Kıbrıs",
+    "projectType": "Rezidans / Daire",
+    "priceRange": "150,000 € - 350,000 €",
+    "features": [
+      "Deniz ve dağ manzaralı",
+      "Ortak havuz",
+      "1+1, 2+1 ve Penthouse seçenekleri",
+      "Yüksek kira getirisi"
+    ],
+    "deliveryDate": "Hemen Teslim",
+    "paymentPlan": "%50 peşinat, 12 ay taksit veya banka kredisine uygun",
+    "investmentNote": "Şehir merkezi ve kira getirisi odaklı yatırımcılar için uygun."
+  },
+  {
+    "projectName": "Karpaz Marina Homes",
+    "location": "Karpaz, Kuzey Kıbrıs",
+    "projectType": "Tatil Evi / Bungalov",
+    "priceRange": "250,000 € - 450,000 €",
+    "features": [
+      "Doğa ile iç içe",
+      "Marina yakınında",
+      "Müstakil bahçeli 2+1 evler"
+    ],
+    "deliveryDate": "Aralık 2026",
+    "paymentPlan": "%30 peşinat, teslime kadar vade farksız taksit",
+    "investmentNote": "Tatil amaçlı alım ve daha sakin lokasyon arayan müşterilere uygun."
+  }
+]
