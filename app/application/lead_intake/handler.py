@@ -138,8 +138,20 @@ class ProcessWebhookLeadHandler:
                 lead=lead,
                 source_override="ai_qualifier",
             )
-        initial_ai_status = "qualified" if score >= threshold else "chatting"
-        initial_path = "fast" if score >= threshold else "chat"
+        # Manual mode: operator clicks Start Qualify on each lead. We still
+        # score + write-through to CRM so the row is visible, but we defer
+        # every AI-side action (LLM reasoning, WhatsApp greeting, stage
+        # flip) until the operator triggers /start-qualify. The flag lives
+        # on the company's ai_config JSONB; default false keeps the
+        # auto-qualify behaviour for every existing install.
+        manual_qualify = bool((company_config or {}).get("manual_qualify"))
+
+        if manual_qualify:
+            initial_ai_status = "pending"
+            initial_path = "fast" if score >= threshold else "chat"
+        else:
+            initial_ai_status = "qualified" if score >= threshold else "chatting"
+            initial_path = "fast" if score >= threshold else "chat"
         await try_update_ai_metadata(
             crm_lead_id or "",
             score=score,
@@ -148,6 +160,16 @@ class ProcessWebhookLeadHandler:
             path=initial_path,
             idempotency_key=f"lead-initial-score-{crm_lead_id or lead.id}",
         )
+
+        if manual_qualify:
+            LEADS_CHAT_PATH.inc()
+            return await self._chat_path(
+                lead, score, breakdown,
+                fallback_url=fallback_url,
+                company_id=cmd.company_id,
+                crm_lead_id=crm_lead_id,
+                defer_auto_start=True,
+            )
 
         # ── Fast path: score >= threshold ────────────────────────────────────
         if score >= threshold:
@@ -233,6 +255,7 @@ class ProcessWebhookLeadHandler:
         fallback_url: str | None = None,
         company_id: str = "",
         crm_lead_id: str | None = None,
+        defer_auto_start: bool = False,
     ) -> dict[str, Any]:
         session_id = str(uuid.uuid4())
         lead_dict = lead.to_dict()
@@ -249,11 +272,15 @@ class ProcessWebhookLeadHandler:
         has_whatsapp_channel = bool(company_id and clean_phone)
 
         # Stage choice:
+        #   * defer_auto_start (manual mode) → always PENDING, operator flips.
         #   * WhatsApp outreach queued → CHAT immediately (the greeting worker
         #    will stream an AI opener and send it on WhatsApp).
         #  * No WhatsApp channel → PENDING; the session still exists for
         #    internal browser / API-based chat flows.
-        initial_stage = SessionStage.CHAT if has_whatsapp_channel else SessionStage.PENDING
+        if defer_auto_start:
+            initial_stage = SessionStage.PENDING
+        else:
+            initial_stage = SessionStage.CHAT if has_whatsapp_channel else SessionStage.PENDING
 
         session = ConversationSession(
             session_id=session_id,
@@ -268,10 +295,11 @@ class ProcessWebhookLeadHandler:
         await self._score_repo.record(session_id, score)
 
         # CRM write-through: link session id to the CRM lead
+        # (manual mode keeps status=pending until the operator clicks Start)
         await try_update_ai_metadata(
             crm_lead_id or "",
             session_id=session_id,
-            status="chatting",
+            status="pending" if defer_auto_start else "chatting",
             idempotency_key=f"lead-chat-session-bind-{crm_lead_id or lead.id}",
         )
 
@@ -279,7 +307,7 @@ class ProcessWebhookLeadHandler:
         # picks it up, streams an AI opener, sends it via Green API, and
         #binds phone→session so the user's reply lands on the same session.
         greeting_queued = False
-        if has_whatsapp_channel:
+        if has_whatsapp_channel and not defer_auto_start:
             try:
                 await self._session_repo.push_wa_greeting(
                     company_id,

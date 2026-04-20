@@ -271,6 +271,101 @@ async def change_lead_status(
         raise HTTPException(status_code=422, detail=msg)
 
 
+# ── Manual Qualify Trigger ──────────────────────────────────────────────────
+
+class StartQualifyRequest(BaseModel):
+    actor: str = "dashboard"
+
+
+@router.post("/leads/{company_id}/{lead_id}/start-qualify")
+async def start_lead_qualify(
+    company_id: str,
+    lead_id: str,
+    body: StartQualifyRequest,
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+) -> dict:
+    """Operator-triggered kick-off for a manual-mode lead. Flips the paired
+    PENDING session to CHAT and queues the WhatsApp greeting — same end
+    state the auto flow would have produced, just deferred to a button."""
+
+    _check_key(x_api_key)
+
+    pool = get_db_pool()
+    lead = await get_lead_with_session(pool, company_id=company_id, lead_db_id=lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="lead not found")
+
+    session_id = lead.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=422, detail="lead has no session to start")
+
+    from app.infrastructure.redis.client import get_redis
+    from app.infrastructure.redis.session_repo import SessionRepository
+    from app.domain.conversation.session import SessionStage
+
+    repo = SessionRepository(get_redis())
+    session = await repo.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found in redis")
+
+    if session.stage == SessionStage.CHAT:
+        return {"ok": True, "already_active": True, "stage": "CHAT"}
+    if session.stage != SessionStage.PENDING:
+        raise HTTPException(status_code=422, detail=f"unexpected stage: {session.stage}")
+
+    await repo.set_stage(session_id, SessionStage.CHAT)
+
+    try:
+        await pool.execute(
+            "UPDATE qualifier_sessions SET stage = 'CHAT', updated_at = now() WHERE id = $1::uuid",
+            session_id,
+        )
+    except Exception:
+        pass
+
+    # Queue a WhatsApp greeting if the lead has a phone. Same shape the
+    # auto flow uses — the greeting worker owns the actual send.
+    phone = (
+        session.lead_json.get("contact", {}).get("phone", "")
+        or session.lead_json.get("phone", "")
+    )
+    if phone and company_id:
+        await repo.push_wa_greeting(
+            company_id,
+            {
+                "session_id": session_id,
+                "company_id": company_id,
+                "phone": phone,
+                "lead_id": session.lead_json.get("id", ""),
+                "crm_lead_id": session.crm_lead_id,
+            },
+        )
+
+    # Flip CRM ai_status pending → chatting so the UI reflects the new state.
+    if session.crm_lead_id:
+        from app.application.crm_sync import try_update_ai_metadata
+
+        await try_update_ai_metadata(
+            session.crm_lead_id,
+            status="chatting",
+            idempotency_key=f"lead-manual-start-{session.crm_lead_id}",
+        )
+
+    try:
+        await insert_activity(
+            pool,
+            company_id=company_id,
+            lead_db_id=lead_id,
+            event_type="ai_started",
+            actor=body.actor,
+            payload={"session_id": session_id, "trigger": "manual"},
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "session_id": session_id, "new_stage": "CHAT"}
+
+
 # ── Activity Timeline ───────────────────────────────────────────────────────
 
 @router.get("/leads/{company_id}/{lead_id}/activity")
