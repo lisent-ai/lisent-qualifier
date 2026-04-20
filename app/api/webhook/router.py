@@ -72,11 +72,20 @@ async def receive_lead(
     }
 
     # ── AI akışını çalıştır ─────────────────────────────────────────────────
+    # external_lead_id is set when the CRM forwards a lead it already
+    # created (intranet inbound, manual create, etc.) — the handler
+    # short-circuits the CRM-create step and only PATCHes ai-metadata
+    # on the pre-existing row, so no duplicate CRM lead is produced.
+    external_lead_id = raw_payload.get("external_lead_id") if isinstance(raw_payload, dict) else None
+    if external_lead_id is not None:
+        external_lead_id = str(external_lead_id).strip() or None
+
     handler = get_lead_intake_handler(session_repo, score_repo)
     cmd = ProcessWebhookLeadCommand(
         lead_data=lead_data,
         fallback_url=fallback_url,
         company_id=company_id,
+        external_lead_id=external_lead_id,
     )
     result = await handler.handle(cmd)
 

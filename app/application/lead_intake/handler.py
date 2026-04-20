@@ -113,11 +113,23 @@ class ProcessWebhookLeadHandler:
         )
 
         # ── CRM write-through: create lead mirror in CRM (idempotent) ───────
-        crm_lead_id = await try_create_or_upsert_crm_lead(
-            company_id=cmd.company_id,
-            lead=lead,
-            source_override="ai_qualifier",
-        )
+        # When the CRM forwarded an already-existing lead (external_lead_id
+        # set), skip the create and just enrich the existing row via the
+        # ai-metadata PATCH. This prevents duplicate CRM rows when the lead
+        # was born on the CRM side (intranet inbound, manual, etc.).
+        if cmd.external_lead_id:
+            crm_lead_id = cmd.external_lead_id
+            log.info(
+                "crm_writethrough_skipped_external_lead",
+                external_lead_id=crm_lead_id,
+                lead_id=lead.id,
+            )
+        else:
+            crm_lead_id = await try_create_or_upsert_crm_lead(
+                company_id=cmd.company_id,
+                lead=lead,
+                source_override="ai_qualifier",
+            )
         initial_ai_status = "qualified" if score >= threshold else "chatting"
         initial_path = "fast" if score >= threshold else "chat"
         await try_update_ai_metadata(
