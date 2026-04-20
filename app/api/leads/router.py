@@ -290,12 +290,27 @@ async def start_lead_qualify(
 
     _check_key(x_api_key)
 
+    # The CRM web hands us the CRM's lead id, which the qualifier stores
+    # in qualifier_leads.lead_id (not l.id). Resolve that pair first so
+    # we pick up the right row + paired session.
     pool = get_db_pool()
-    lead = await get_lead_with_session(pool, company_id=company_id, lead_db_id=lead_id)
-    if lead is None:
+    row = await pool.fetchrow(
+        """
+        SELECT l.id::text AS lead_db_id, s.id::text AS session_id
+        FROM qualifier_leads l
+        LEFT JOIN qualifier_sessions s ON s.lead_id = l.id
+        WHERE l.company_id = $1 AND l.lead_id = $2
+        ORDER BY s.created_at DESC NULLS LAST
+        LIMIT 1
+        """,
+        company_id,
+        lead_id,
+    )
+    if row is None:
         raise HTTPException(status_code=404, detail="lead not found")
 
-    session_id = lead.get("session_id")
+    session_id = row["session_id"]
+    lead_db_id = row["lead_db_id"]
     if not session_id:
         raise HTTPException(status_code=422, detail="lead has no session to start")
 
@@ -355,7 +370,7 @@ async def start_lead_qualify(
         await insert_activity(
             pool,
             company_id=company_id,
-            lead_db_id=lead_id,
+            lead_db_id=lead_db_id,
             event_type="ai_started",
             actor=body.actor,
             payload={"session_id": session_id, "trigger": "manual"},
