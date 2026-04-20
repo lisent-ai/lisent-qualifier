@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 import structlog
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import get_settings
 from app.infrastructure.crm.rest_client import lookup_company_by_rag_token
@@ -35,10 +35,12 @@ router = APIRouter(tags=["rag"])
 
 class IngestDocument(BaseModel):
     """One document in the batch. ``content`` is required; everything else
-    is optional. ``doc_ref`` is the idempotency key — re-sending with the same
+    is optional. ``record_id`` is the idempotency key — re-sending with the same
     ref replaces the existing chunks rather than creating duplicates."""
 
-    doc_ref: str = Field(min_length=1, max_length=200)
+    model_config = ConfigDict(populate_by_name=True)
+
+    doc_ref: str = Field(alias="record_id", min_length=1, max_length=200)
     title: str = Field(default="", max_length=500)
     content: str = Field(min_length=1, max_length=200_000)
     source_url: Optional[str] = Field(default=None, max_length=2000)
@@ -46,7 +48,7 @@ class IngestDocument(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    documents: list[IngestDocument] = Field(min_length=1, max_length=50)
+    data: list[IngestDocument] = Field(min_length=1, max_length=50)
 
 
 class IngestResult(BaseModel):
@@ -124,7 +126,7 @@ async def ingest_documents(
             pass
 
     results: list[IngestResult] = []
-    for doc in payload.documents:
+    for doc in payload.data:
         chunk_count = await kb_repo.upsert_document(
             company_id=company_id,
             doc_ref=doc.doc_ref,
