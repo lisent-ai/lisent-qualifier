@@ -168,6 +168,37 @@ async def list_documents(company_id: str, *, limit: int = 100) -> list[dict[str,
     ]
 
 
+async def get_document_chunks(company_id: str, doc_ref: str) -> list[KBChunk]:
+    """Return every chunk for a single (company_id, doc_ref), ordered by index."""
+
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, company_id, doc_ref, chunk_index, title, content,
+                   source_url, metadata
+            FROM ai_kb_documents
+            WHERE company_id = $1 AND doc_ref = $2
+            ORDER BY chunk_index ASC
+            """,
+            company_id,
+            doc_ref,
+        )
+    return [
+        KBChunk(
+            id=str(r["id"]),
+            company_id=str(r["company_id"]),
+            doc_ref=r["doc_ref"],
+            chunk_index=r["chunk_index"],
+            title=r["title"] or "",
+            content=r["content"],
+            source_url=r["source_url"],
+            metadata=_from_jsonb(r["metadata"]),
+        )
+        for r in rows
+    ]
+
+
 async def search_chunks(
     company_id: str,
     query: str,
@@ -247,6 +278,7 @@ __all__: Sequence[str] = (
     "upsert_document",
     "delete_document",
     "list_documents",
+    "get_document_chunks",
     "search_chunks",
 )
 

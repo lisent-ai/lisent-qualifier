@@ -198,6 +198,17 @@ async def list_company_documents(
     return await kb_repo.list_documents(company_id, limit=limit)
 
 
+@router.get(
+    "/internal/rag/{company_id}/documents/{doc_ref}",
+    dependencies=[Depends(_require_api_key)],
+)
+async def get_company_document(company_id: str, doc_ref: str) -> dict[str, Any]:
+    chunks = await kb_repo.get_document_chunks(company_id, doc_ref)
+    if not chunks:
+        raise HTTPException(status_code=404, detail="document not found")
+    return {"doc_ref": doc_ref, "chunks": kb_repo.as_dicts(chunks)}
+
+
 @router.post("/internal/rag/{company_id}/search", dependencies=[Depends(_require_api_key)])
 async def debug_search(company_id: str, body: SearchRequest) -> dict[str, Any]:
     chunks = await kb_repo.search_chunks(company_id, body.query, top_k=body.top_k)
