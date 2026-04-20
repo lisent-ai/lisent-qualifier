@@ -146,7 +146,7 @@ class ProcessWebhookLeadHandler:
             status=initial_ai_status,
             score_breakdown=breakdown,
             path=initial_path,
-            idempotency_key=f"lead-initial-score-{lead.id}",
+            idempotency_key=f"lead-initial-score-{crm_lead_id or lead.id}",
         )
 
         # ── Fast path: score >= threshold ────────────────────────────────────
@@ -195,7 +195,7 @@ class ProcessWebhookLeadHandler:
             crm_lead_id or "",
             status="qualified",
             reasoning=reasoning_json,
-            idempotency_key=f"lead-fast-handoff-{lead.id}",
+            idempotency_key=f"lead-fast-handoff-{crm_lead_id or lead.id}",
         )
 
         handoff = {
@@ -272,7 +272,7 @@ class ProcessWebhookLeadHandler:
             crm_lead_id or "",
             session_id=session_id,
             status="chatting",
-            idempotency_key=f"lead-chat-session-bind-{lead.id}",
+            idempotency_key=f"lead-chat-session-bind-{crm_lead_id or lead.id}",
         )
 
         # Enqueue the WhatsApp greeting. The background greeting_worker
