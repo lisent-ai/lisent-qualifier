@@ -207,13 +207,33 @@ async def search_chunks(
 ) -> list[KBChunk]:
     """Full-text similarity search scoped to a single company.
 
-    Uses the Postgres tsvector GIN index built in migration 002. Empty or
-    whitespace-only queries return no rows rather than the entire corpus.
+    Uses the Postgres tsvector GIN index built in migration 002. We build
+    the tsquery ourselves with OR semantics so partial matches still
+    surface — ``plainto_tsquery`` would AND every term together and drop
+    the whole hit when one word (e.g. a place name the LLM invented) is
+    missing from the corpus. ``ts_rank`` preserves relevance ordering.
     """
 
-    normalized = re.sub(r"\s+", " ", query or "").strip()
-    if not normalized:
+    tokens = [
+        t
+        for t in re.findall(r"\w+", (query or "").lower(), flags=re.UNICODE)
+        if len(t) >= 2
+    ]
+    if not tokens:
         return []
+
+    # Deduplicate while preserving order; cap to protect against runaway
+    # LLM queries. ``:*`` makes each term a prefix match so plurals and
+    # compound words still connect.
+    seen: set[str] = set()
+    unique_tokens: list[str] = []
+    for t in tokens:
+        if t not in seen:
+            seen.add(t)
+            unique_tokens.append(t)
+        if len(unique_tokens) >= 16:
+            break
+    tsquery = " | ".join(f"{t}:*" for t in unique_tokens)
 
     pool = get_db_pool()
     async with pool.acquire() as conn:
@@ -221,15 +241,15 @@ async def search_chunks(
             """
             SELECT id, company_id, doc_ref, chunk_index, title, content,
                    source_url, metadata,
-                   ts_rank(content_tsv, plainto_tsquery('simple', $2)) AS rank
+                   ts_rank(content_tsv, to_tsquery('simple', $2)) AS rank
             FROM ai_kb_documents
             WHERE company_id = $1
-              AND content_tsv @@ plainto_tsquery('simple', $2)
+              AND content_tsv @@ to_tsquery('simple', $2)
             ORDER BY rank DESC
             LIMIT $3
             """,
             company_id,
-            normalized,
+            tsquery,
             top_k,
         )
 

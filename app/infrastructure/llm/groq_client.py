@@ -23,13 +23,16 @@ CHAT_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "search_knowledge_base",
             "description": (
-                "Search the company's knowledge base (projects, units, prices, "
-                "locations, specs, policies). Call this whenever the user asks "
-                "about concrete company offerings — project names, available "
-                "units, pricing, amenities, delivery dates, locations — and "
-                "the answer is not already in the conversation. The knowledge "
-                "base is indexed in English; translate the user's query to "
-                "English keywords before calling."
+                "Search the company's knowledge base (projects, units, "
+                "prices, locations, specs, policies). Call this whenever "
+                "the user asks about concrete company offerings — project "
+                "names, available units, pricing, amenities, delivery "
+                "dates, locations — and the answer is not already in the "
+                "conversation. Place names MUST stay in the language the "
+                "corpus uses: Turkish (Girne, Lefkoşa, Çatalköy, Esentepe, "
+                "İskele), NOT their English exonyms (Kyrenia, Nicosia). "
+                "Generic nouns (villa, apartment, project, price) can be "
+                "either language; include both when unsure."
             ),
             "parameters": {
                 "type": "object",
@@ -37,9 +40,11 @@ CHAT_TOOLS: list[dict[str, Any]] = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "A short English search phrase with the key terms, "
-                            "e.g. 'villa Kyrenia 3 bedroom sea view' or "
-                            "'Phuket resort active projects'."
+                            "2–6 key terms separated by spaces. Turkish "
+                            "place names, mixed-language generic terms. "
+                            "Examples: 'Girne villa 3 yatak', "
+                            "'Esentepe stüdyo price', "
+                            "'Phuket resort active'."
                         ),
                     },
                 },
