@@ -60,15 +60,18 @@ async def lookup_company_by_qualifier_token(token: str) -> Optional[dict]:
 async def fetch_company_ai_config(company_id: str) -> Optional[dict]:
     """
     CRM'den company_id'ye göre AI agent config döner.
-    Config yoksa None döner (CRM auto-create yapacak).
+    /internal/company/{id}/qualifier-config içindeki ``ai_config`` alanı
+    döndürülür; kayıt yoksa ya da ai_config boşsa None.
     """
     try:
         client = _get_crm_rest_client()
-        resp = await client.get(f"/internal/company/{company_id}/ai-config")
+        resp = await client.get(f"/internal/company/{company_id}/qualifier-config")
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json() or {}
+        cfg = data.get("ai_config")
+        return cfg if isinstance(cfg, dict) and cfg else None
     except RuntimeError as exc:
         log.error("crm_rest_not_configured", error=str(exc))
         return None
