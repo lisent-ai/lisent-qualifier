@@ -82,9 +82,17 @@ class ProcessWebhookLeadHandler:
         LEADS_RECEIVED.inc()
 
         # ── Idempotency check ────────────────────────────────────────────────
+        # When a forward from CRM carries its own external_lead_id (a unique
+        # CRM row id), the sender-side lead_id is just a payload artifact —
+        # two separate CRM rows can legitimately share the same sender id
+        # (e.g. retries of the same FB lead into different intranet deliveries).
+        # Keying dedup on external_lead_id in that case, or skipping it
+        # entirely when neither is usable, prevents the second row from
+        # being silently left without an AI score.
         lead_id = data.get("lead_id", "")
-        if lead_id and await self._session_repo.is_duplicate_lead(lead_id):
-            log.info("duplicate_lead_ignored", lead_id=lead_id)
+        dedup_key = cmd.external_lead_id or lead_id
+        if dedup_key and await self._session_repo.is_duplicate_lead(dedup_key):
+            log.info("duplicate_lead_ignored", dedup_key=dedup_key, lead_id=lead_id)
             return {"status": "duplicate", "lead_id": lead_id}
 
         # ── Build domain entity & score ──────────────────────────────────────
