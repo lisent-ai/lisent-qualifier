@@ -18,7 +18,7 @@ import time
 from typing import Any, Optional
 
 import structlog
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import get_settings
@@ -191,8 +191,11 @@ def _require_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-AP
 
 
 @router.get("/internal/rag/{company_id}/documents", dependencies=[Depends(_require_api_key)])
-async def list_company_documents(company_id: str) -> list[dict[str, Any]]:
-    return await kb_repo.list_documents(company_id)
+async def list_company_documents(
+    company_id: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+) -> list[dict[str, Any]]:
+    return await kb_repo.list_documents(company_id, limit=limit)
 
 
 @router.post("/internal/rag/{company_id}/search", dependencies=[Depends(_require_api_key)])
