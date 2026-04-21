@@ -162,7 +162,13 @@ class LisentCRMTenantAdapter(TenantPort):
 
     @staticmethod
     def _row_to_tenant(row: Any) -> Tenant:
-        """asyncpg.Record → Tenant dataclass."""
+        """asyncpg.Record → Tenant dataclass.
+
+        jsonb kolonları StandaloneTenantAdapter'daki `_parse_jsonb` helper ile
+        parse edilir (asyncpg jsonb'yi string döner).
+        """
+        from app.adapters.tenant.standalone import _parse_jsonb
+
         return Tenant(
             id=row["id"],
             slug=row["slug"],
@@ -171,11 +177,11 @@ class LisentCRMTenantAdapter(TenantPort):
             source_ref=row["source_ref"],
             plan=TenantPlan(row["plan"]),
             status=TenantStatus(row["status"]),
-            config=dict(row["config"]) if row["config"] else {},
+            config=_parse_jsonb(row["config"]),
             domain_claims=list(row["domain_claims"] or []),
             outbound_webhook_url=row["outbound_webhook_url"],
             outbound_webhook_secret=row["outbound_webhook_secret"],
-            branding=dict(row["branding"]) if row["branding"] else {},
+            branding=_parse_jsonb(row["branding"]),
             qualification_framework=QualificationFramework(row["qualification_framework"]),
             partner_id=row["partner_id"],
         )

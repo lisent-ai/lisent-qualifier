@@ -16,6 +16,7 @@ Phase 1.D.1: Skeleton — DB query yapıları kuruldu, API key hashing Phase 1.E
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -46,11 +47,25 @@ class StandaloneTenantAdapter(TenantPort):
 
     async def resolve_by_webhook_token(self, token: str) -> Tenant:
         """
-        Webhook'lar external tenant'lar için API key üzerinden geliyor.
-        Phase 1.E'de bu flow gerçekleşecek; şu anda prototype.
+        Webhook token → Tenant lookup.
+
+        Phase 1.E (current): slug-based lookup — dev/test için basit auth.
+        Token tenant.slug'ıyla eşleşir (örn. 'acme-insaat').
+
+        Phase 2: bcrypt hash lookup via `tenant_api_keys` tablosu.
         """
-        # TODO Phase 1.E: API key hash match + usage tracking
-        return await self.resolve_by_api_key(token)
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM tenants WHERE slug = $1 AND status = 'active'",
+                token,
+            )
+        if row is None:
+            raise TenantNotFoundError(f"No active tenant with slug={token!r}")
+
+        tenant = self._row_to_tenant(row)
+        if tenant.status == TenantStatus.SUSPENDED:
+            raise TenantSuspendedError(f"tenant {tenant.slug} suspended")
+        return tenant
 
     async def resolve_by_api_key(self, api_key: str) -> Tenant:
         """
@@ -108,7 +123,11 @@ class StandaloneTenantAdapter(TenantPort):
 
     @staticmethod
     def _row_to_tenant(row: Any) -> Tenant:
-        """asyncpg.Record → Tenant dataclass (LisentCRMTenantAdapter ile aynı şema)."""
+        """asyncpg.Record → Tenant dataclass (LisentCRMTenantAdapter ile aynı şema).
+
+        asyncpg jsonb kolonları string olarak döner; json.loads ile parse ediyoruz
+        (lead_repo.py aynı pattern'i kullanıyor).
+        """
         return Tenant(
             id=row["id"],
             slug=row["slug"],
@@ -117,11 +136,26 @@ class StandaloneTenantAdapter(TenantPort):
             source_ref=row["source_ref"],
             plan=TenantPlan(row["plan"]),
             status=TenantStatus(row["status"]),
-            config=dict(row["config"]) if row["config"] else {},
+            config=_parse_jsonb(row["config"]),
             domain_claims=list(row["domain_claims"] or []),
             outbound_webhook_url=row["outbound_webhook_url"],
             outbound_webhook_secret=row["outbound_webhook_secret"],
-            branding=dict(row["branding"]) if row["branding"] else {},
+            branding=_parse_jsonb(row["branding"]),
             qualification_framework=QualificationFramework(row["qualification_framework"]),
             partner_id=row["partner_id"],
         )
+
+
+def _parse_jsonb(value: Any) -> dict[str, Any]:
+    """asyncpg jsonb → dict. None | '' | '{}' | string JSON | dict hepsini handle eder."""
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}

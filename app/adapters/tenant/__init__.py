@@ -8,7 +8,12 @@ kaynağıyla konuşur:
     - CompositeTenantAdapter (Phase 1.E) — ikisinin merge'i (önce standalone, yoksa CRM)
 """
 
+from app.adapters.tenant.composite import CompositeTenantAdapter
 from app.adapters.tenant.lisent_crm import LisentCRMTenantAdapter
 from app.adapters.tenant.standalone import StandaloneTenantAdapter
 
-__all__ = ["LisentCRMTenantAdapter", "StandaloneTenantAdapter"]
+__all__ = [
+    "CompositeTenantAdapter",
+    "LisentCRMTenantAdapter",
+    "StandaloneTenantAdapter",
+]

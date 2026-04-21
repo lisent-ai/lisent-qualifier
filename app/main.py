@@ -22,6 +22,7 @@ from app.api.leads.router import router as leads_router
 from app.api.sessions.router import router as sessions_router
 from app.api.rag.router import router as rag_router
 from app.api.middleware.request_id import RequestIDMiddleware
+from app.interfaces.rest_public import v1_router  # Phase 1.E: public v1 API
 
 import logging
 import sys
@@ -148,7 +149,7 @@ def create_app() -> FastAPI:
     # Correlation ID — first middleware so it wraps every other.
     app.add_middleware(RequestIDMiddleware)
 
-    # Routers
+    # Routers — legacy (mevcut davranış korunuyor)
     app.include_router(health_router)
     app.include_router(webhook_router)
     app.include_router(chat_router)
@@ -156,6 +157,9 @@ def create_app() -> FastAPI:
     app.include_router(leads_router)
     app.include_router(sessions_router)
     app.include_router(rag_router)
+
+    # Phase 1.E — public v1 API (paralel layer, legacy'ye dokunmaz)
+    app.include_router(v1_router)
 
     # Prometheus metrics endpoint
     metrics_app = make_asgi_app()
