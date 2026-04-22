@@ -44,6 +44,11 @@ services:
       QUALIFIER_CRM_WRITETHROUGH_ENABLED: ${QUALIFIER_CRM_WRITETHROUGH_ENABLED:-true}
       QUALIFIER_LEGACY_API_ENABLED: ${QUALIFIER_LEGACY_API_ENABLED:-true}
       RAG_WEBHOOK_ENABLED: ${RAG_WEBHOOK_ENABLED:-false}
+
+      # Phase 2 — multi-tenant v1 public API secrets. Both MUST be set in
+      # Dokploy (no defaults — empty value disables the relevant auth path).
+      API_KEY_PEPPER: ${API_KEY_PEPPER}
+      PLATFORM_ADMIN_TOKEN: ${PLATFORM_ADMIN_TOKEN}
     networks:
       - dokploy-network
 
