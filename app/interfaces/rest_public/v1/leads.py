@@ -195,6 +195,16 @@ async def create_lead(
         lead_id=str(row["id"]),
         external_ref=external_ref,
     )
+
+    # Phase 2.G — record usage
+    try:
+        from app.infrastructure.redis.client import get_redis
+        from app.infrastructure.usage.counter import RedisUsageCounter
+
+        await RedisUsageCounter(get_redis()).incr(tenant.id, "leads_ingested")
+    except Exception as exc:
+        log.warning("usage_counter_failed", error=str(exc))
+
     return _row_to_lead(row, tenant.id)
 
 
