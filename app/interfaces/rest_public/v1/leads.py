@@ -24,6 +24,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from app.infrastructure.db.pool import get_db_pool
 from app.interfaces.rest_public.auth import get_current_tenant
+from app.interfaces.rest_public.rate_limit_dep import enforce_rate_limit
 from app.ports.tenant import Tenant
 
 log = structlog.get_logger(__name__)
@@ -134,7 +135,7 @@ def _row_to_lead(row: Any, tenant_id: UUID) -> LeadResponse:
 )
 async def create_lead(
     body: LeadCreateRequest,
-    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    tenant: Annotated[Tenant, Depends(enforce_rate_limit)],
 ) -> LeadResponse:
     """Yeni lead oluştur. Scoring asenkron (Phase 2.C'de eklenir).
 
@@ -215,7 +216,7 @@ async def create_lead(
 
 @router.get("", response_model=LeadListResponse)
 async def list_leads(
-    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    tenant: Annotated[Tenant, Depends(enforce_rate_limit)],
     limit: int = Query(default=50, ge=1, le=200),
     cursor: str | None = Query(default=None, description="Base64-encoded cursor from previous page's next_cursor"),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -286,7 +287,7 @@ async def list_leads(
 @router.get("/{lead_id}", response_model=LeadResponse)
 async def get_lead(
     lead_id: UUID,
-    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    tenant: Annotated[Tenant, Depends(enforce_rate_limit)],
 ) -> LeadResponse:
     """Tek lead detayı — application-level tenant filter (RLS ikincil defense).
 
