@@ -76,9 +76,12 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       DATABASE_URL: postgresql://app:${DB_PASSWORD:-qualifierpass}@qualifier-db:5432/lead_qualifier
       REDIS_DSN: redis://qualifier-redis:6379/0
-      CRM_BASE_URL: ${CRM_BASE_URL:-http://lisent-dev-crm-service:9090}
-      CRM_API_KEY: ${CRM_API_KEY:-dev-crm-internal-api-key}
-      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-crm-internal-api-key}
+      # NOTE: literal values (no ${VAR:-default}) because .env holds prod
+      # swarm hostnames that docker-compose would otherwise substitute here.
+      # Dev stack must always resolve CRM via the shared dev network alias.
+      CRM_BASE_URL: http://crm-service:9090
+      CRM_API_KEY: dev-crm-internal-api-key
+      INTERNAL_API_KEY: dev-crm-internal-api-key
       RAG_WEBHOOK_ENABLED: ${RAG_WEBHOOK_ENABLED:-true}
       QUALIFIER_CRM_WRITETHROUGH_ENABLED: ${QUALIFIER_CRM_WRITETHROUGH_ENABLED:-true}
       # Phase 2.A — API key hash pepper (dev default; prod via Dokploy env)
