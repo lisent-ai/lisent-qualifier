@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # Production'da env var ile override edilmeli; dev default rotate et.
     api_key_pepper: str = "dev_pepper_rotate_in_prod"
 
+    # Phase 2.O.1 — BFF proxy server-side auth (crm-web → qualifier admin API).
+    # Yalnızca BFF proxy bilir; her request'te `X-Lisent-Tenant-Id` header ile
+    # hangi tenant'ı temsil ettiği bildirilir. Empty string → devre dışı.
+    platform_admin_token: str = ""
+
     # PostgreSQL (ai-lead-qualifier kendi instance'ı)
     database_url: str = "postgresql://app:qualifierpass@db:5432/lead_qualifier"
 

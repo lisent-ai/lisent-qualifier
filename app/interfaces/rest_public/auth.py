@@ -1,25 +1,30 @@
 """
-API Key authentication dependency for v1 routes.
+Tenant auth dependency for v1 routes.
 
-Phase 1.E (şimdi): Placeholder — `Authorization: Bearer sk_live_...` header'ını
-parse eder, bcrypt hash lookup Phase 2'de eklenecek. Şu anda raw token'ı tenant
-slug olarak kabul eder (dev/test için convenience).
+Supports 3 auth modes (evaluated in order):
+    1. Platform admin token (BFF proxy) — Bearer matches PLATFORM_ADMIN_TOKEN
+       env var, tenant resolved from `X-Lisent-Tenant-Id` header. Used by
+       crm-web BFF for admin panels (API keys/config/usage).
+    2. API key — Bearer sk_live_* / sk_test_* → bcrypt-hashed lookup in
+       tenant_api_keys table (Phase 2.A).
+    3. Dev slug convenience — raw tenant slug as Bearer, resolve via
+       webhook_token → standalone adapter (Phase 1.E dev/test only).
 
-Phase 2'de:
-    - `tenant_api_keys` tablosunda bcrypt hash compare (constant-time)
-    - `last_used_at` update
-    - scope validation
-    - rate limiting hook
+Production: mode 1 + mode 2 used. Mode 3 disabled via
+`DISABLE_SLUG_AUTH=true` env (Phase 2+).
 """
 
 from __future__ import annotations
 
+import hmac
 from typing import Annotated
+from uuid import UUID
 
 import structlog
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.config import get_settings
 from app.interfaces.rest_public.di import get_tenant_adapter
 from app.ports.tenant import Tenant, TenantNotFoundError, TenantPort, TenantSuspendedError
 
@@ -33,16 +38,7 @@ async def get_current_tenant(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
     tenant_adapter: TenantPort = Depends(get_tenant_adapter),
 ) -> Tenant:
-    """API key veya slug-based dev auth'tan Tenant resolve eder.
-
-    Phase 1.E dev mode:
-        - `Authorization: Bearer sk_test_<slug>` → resolve_by_webhook_token(slug)
-        - Yoksa 401
-
-    Phase 2:
-        - `Authorization: Bearer sk_live_<token>` → bcrypt hash lookup
-        - `Authorization: Bearer eyJ...` → JWT decode + claim verify
-    """
+    """Bearer → Tenant (3 mode — docstring yukarıda)."""
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -50,17 +46,92 @@ async def get_current_tenant(
         )
 
     raw = credentials.credentials
+    settings = get_settings()
+
+    # ── Mode 1: Platform admin token (BFF proxy) ────────────────────────────
+    if (
+        settings.platform_admin_token
+        and hmac.compare_digest(raw, settings.platform_admin_token)
+    ):
+        # Öncelik: X-Lisent-Tenant-Id → direct tenant_id
+        # Alternatif: X-Lisent-Source-Ref (+optional X-Lisent-Source-Type)
+        #   → legacy CRM company_id lookup (migration 003 backfill üzerinden)
+        tenant_header = request.headers.get("x-lisent-tenant-id")
+        source_ref_header = request.headers.get("x-lisent-source-ref")
+        source_type_header = request.headers.get("x-lisent-source-type", "lisent_crm")
+
+        tenant: Tenant | None = None
+
+        if tenant_header:
+            try:
+                tenant_uuid = UUID(tenant_header)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="X-Lisent-Tenant-Id must be a valid UUID",
+                )
+            try:
+                tenant = await tenant_adapter.resolve_by_id(tenant_uuid)
+            except TenantNotFoundError:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"tenant {tenant_uuid} not found",
+                )
+            except TenantSuspendedError:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Tenant suspended",
+                )
+        elif source_ref_header:
+            from app.ports.tenant import TenantSourceType
+
+            try:
+                source_type = TenantSourceType(source_type_header)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid X-Lisent-Source-Type: {source_type_header!r}",
+                )
+            tenant = await tenant_adapter.resolve_by_source_ref(
+                source_type, source_ref_header
+            )
+            if tenant is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"tenant for {source_type.value}:{source_ref_header} not found",
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Platform admin token requires one of: "
+                    "X-Lisent-Tenant-Id or X-Lisent-Source-Ref header"
+                ),
+            )
+
+        log.debug(
+            "auth_platform_admin",
+            tenant_id=str(tenant.id),
+            via=("tenant_id" if tenant_header else "source_ref"),
+        )
+        request.state.tenant_id = tenant.id
+        request.state.tenant = tenant
+        request.state.auth_mode = "platform_admin"
+        return tenant
+
+    # ── Mode 2: API key (sk_live_* / sk_test_*) ─────────────────────────────
     try:
-        # Phase 2.A: sk_live_/sk_test_ prefix'li key'ler bcrypt/sha256 lookup'a gider
         if raw.startswith(("sk_live_", "sk_test_")):
             tenant = await tenant_adapter.resolve_by_api_key(raw)
+            request.state.auth_mode = "api_key"
         else:
-            # Dev convenience: slug lookup (unit test + local smoke)
+            # ── Mode 3: Dev slug convenience ────────────────────────────────
             tenant = await tenant_adapter.resolve_by_webhook_token(raw)
+            request.state.auth_mode = "slug"
     except TenantNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
+            detail="Invalid credentials",
         )
     except TenantSuspendedError:
         raise HTTPException(
@@ -68,13 +139,11 @@ async def get_current_tenant(
             detail="Tenant suspended",
         )
     except NotImplementedError:
-        # Dev fallback: bir test adapter'ı bu method'u yapmamış olabilir
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Auth method not implemented for this adapter",
         )
 
-    # Request state'e tenant_id koy — middleware bunu kullanabilir
     request.state.tenant_id = tenant.id
     request.state.tenant = tenant
     return tenant
