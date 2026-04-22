@@ -69,18 +69,45 @@ class StandaloneTenantAdapter(TenantPort):
 
     async def resolve_by_api_key(self, api_key: str) -> Tenant:
         """
-        API key bcrypt hash lookup.
+        API key → Tenant lookup (Phase 2.A).
 
-        Phase 1.E'de eklenecekler:
-            - bcrypt hash compare (constant-time)
-            - `last_used_at` update
-            - scope validation
+        Flow:
+            1. SHA-256 hash hesapla (pepper ile)
+            2. `tenant_api_keys` tablosunda active (revoked_at IS NULL +
+               expires_at > now()) hash eşleşmesi ara
+            3. Bulursan tenant lookup + status check + last_used_at update
+            4. Bulamazsan TenantNotFoundError
+
+        Scope'lar Tenant'a yüklenmez — endpoint-level FastAPI Depends ile
+        kontrol edilir (ayrı dependency: `require_scope("lead:write")`).
         """
-        # Phase 1.D.1 skeleton: prefix + last_4 match yapılabilir (hash cache'te yoksa)
-        # Gerçek implementation Phase 1.E'de — şimdilik raise
-        raise NotImplementedError(
-            "StandaloneTenantAdapter.resolve_by_api_key — Phase 1.E'de bcrypt auth eklenecek"
-        )
+        from app.config import get_settings
+        from app.domain.tenant.api_key import hash_api_key
+        from app.infrastructure.db import tenant_api_key_repo
+
+        settings = get_settings()
+        hash_hex = hash_api_key(api_key, pepper=settings.api_key_pepper)
+
+        async with self._pool.acquire() as conn:
+            key_record = await tenant_api_key_repo.find_by_hash(conn, hash_hex)
+            if key_record is None:
+                raise TenantNotFoundError("API key not found or inactive")
+
+            tenant_row = await conn.fetchrow(
+                "SELECT * FROM tenants WHERE id = $1", key_record["tenant_id"]
+            )
+            if tenant_row is None:
+                raise TenantNotFoundError(
+                    f"tenant {key_record['tenant_id']} not found (orphan api_key)"
+                )
+
+            # last_used_at non-critical — hata log only, auth'u durdurmaz
+            await tenant_api_key_repo.touch_last_used(conn, key_record["id"])
+
+        tenant = self._row_to_tenant(tenant_row)
+        if tenant.status == TenantStatus.SUSPENDED:
+            raise TenantSuspendedError(f"tenant {tenant.slug} suspended")
+        return tenant
 
     async def resolve_by_id(self, tenant_id: UUID) -> Tenant:
         """Direkt tenant ID lookup."""

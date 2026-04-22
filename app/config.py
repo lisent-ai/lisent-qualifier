@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Internal API key (leads listing endpoint için)
     internal_api_key: str = ""
 
+    # Phase 2.A — API key pepper (SHA-256 salt for tenant_api_keys hashing).
+    # Production'da env var ile override edilmeli; dev default rotate et.
+    api_key_pepper: str = "dev_pepper_rotate_in_prod"
+
     # PostgreSQL (ai-lead-qualifier kendi instance'ı)
     database_url: str = "postgresql://app:qualifierpass@db:5432/lead_qualifier"
 

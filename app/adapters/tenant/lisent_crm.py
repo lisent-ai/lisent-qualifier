@@ -72,10 +72,10 @@ class LisentCRMTenantAdapter(TenantPort):
         return tenant
 
     async def resolve_by_api_key(self, api_key: str) -> Tenant:
-        """LisentCRMTenantAdapter API key yönetmez — standalone adapter'a delege."""
-        raise NotImplementedError(
-            "LisentCRMTenantAdapter does not resolve by API key. "
-            "Use StandaloneTenantAdapter for API key auth."
+        """LisentCRMTenantAdapter API key yönetmez — TenantNotFoundError ile
+        composite fallback zincirinin bir sonraki adımına geçiş (veya 401) sağlar."""
+        raise TenantNotFoundError(
+            "LisentCRMTenantAdapter does not resolve by API key"
         )
 
     async def resolve_by_id(self, tenant_id: UUID) -> Tenant:

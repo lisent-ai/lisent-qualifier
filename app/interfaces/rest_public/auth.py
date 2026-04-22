@@ -51,16 +51,12 @@ async def get_current_tenant(
 
     raw = credentials.credentials
     try:
-        # Dev convenience: sk_test_<slug> → slug lookup
-        # Prod: API key bcrypt → Phase 2
-        if raw.startswith("sk_test_"):
-            slug_or_token = raw[len("sk_test_") :]
-        elif raw.startswith("sk_live_"):
-            slug_or_token = raw  # production yolu — Phase 2 bcrypt lookup
+        # Phase 2.A: sk_live_/sk_test_ prefix'li key'ler bcrypt/sha256 lookup'a gider
+        if raw.startswith(("sk_live_", "sk_test_")):
+            tenant = await tenant_adapter.resolve_by_api_key(raw)
         else:
-            slug_or_token = raw  # fallback
-
-        tenant = await tenant_adapter.resolve_by_webhook_token(slug_or_token)
+            # Dev convenience: slug lookup (unit test + local smoke)
+            tenant = await tenant_adapter.resolve_by_webhook_token(raw)
     except TenantNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

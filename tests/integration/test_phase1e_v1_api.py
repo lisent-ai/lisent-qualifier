@@ -135,9 +135,11 @@ class TestV1TenantAuth:
         assert debug_row is not None, "test_tenant fixture INSERT çalışmadı"
         assert debug_row["status"] == "active"
 
+        # Phase 2.A: sk_test_/sk_live_ prefix'li token'lar artık API key lookup'a gider.
+        # Dev slug auth için raw slug kullan (prefix'siz).
         resp = await api_client.get(
             "/v1/tenant/me",
-            headers={"Authorization": f"Bearer sk_test_{test_tenant['slug']}"},
+            headers={"Authorization": f"Bearer {test_tenant['slug']}"},
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
