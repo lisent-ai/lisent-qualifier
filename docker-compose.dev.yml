@@ -27,8 +27,9 @@ services:
 
   qualifier-redis:
     image: redis:7.4-alpine
+    # Prod swarm redis port 6379 kullanıyor; dev host'ta 6380'a bind
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: >
       redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
       --appendonly yes --appendfsync everysec
@@ -58,8 +59,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Prod swarm api uses 8000; dev host on 8001
     ports:
-      - "8000:8000"
+      - "8001:8000"
     depends_on:
       qualifier-db:
         condition: service_healthy
@@ -79,6 +81,10 @@ services:
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-crm-internal-api-key}
       RAG_WEBHOOK_ENABLED: ${RAG_WEBHOOK_ENABLED:-true}
       QUALIFIER_CRM_WRITETHROUGH_ENABLED: ${QUALIFIER_CRM_WRITETHROUGH_ENABLED:-true}
+      # Phase 2.A — API key hash pepper (dev default; prod via Dokploy env)
+      API_KEY_PEPPER: ${API_KEY_PEPPER:-dev-pepper-local-only}
+      # Phase 2.O.1 — BFF platform admin token (must match crm-web's QUALIFIER_PLATFORM_TOKEN)
+      PLATFORM_ADMIN_TOKEN: ${PLATFORM_ADMIN_TOKEN:-dev-bff-platform-token}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

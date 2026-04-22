@@ -94,16 +94,16 @@ class LisentCRMTenantAdapter(TenantPort):
         source_type: TenantSourceType,
         source_ref: str,
     ) -> Tenant | None:
-        """CRM company_id → tenant lookup."""
+        """CRM company_id → tenant lookup with lazy provision.
+
+        Trusted BFF flow (platform admin token + X-Lisent-Source-Ref): if no
+        tenants row exists for a CRM company, auto-create it. Matches the
+        webhook-token path so new CRM companies (post-migration) work without
+        a manual backfill step.
+        """
         if source_type != TenantSourceType.LISENT_CRM:
             return None
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM tenants WHERE source_type = $1 AND source_ref = $2",
-                source_type.value,
-                source_ref,
-            )
-        return self._row_to_tenant(row) if row else None
+        return await self._find_or_create_legacy_tenant(source_ref)
 
     async def get_config(self, tenant: Tenant) -> dict[str, Any]:
         """CRM'den ai_config fetch eder.

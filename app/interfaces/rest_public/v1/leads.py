@@ -20,7 +20,7 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 from app.infrastructure.db.pool import get_db_pool
 from app.interfaces.rest_public.auth import get_current_tenant
@@ -45,7 +45,7 @@ class LeadCreateRequest(BaseModel):
         description="Upstream ID (e.g. CRM lead_id). Omit → auto UUID. Used for idempotency.",
     )
     name: str | None = Field(None, max_length=255)
-    email: EmailStr | None = None
+    email: str | None = Field(default=None, max_length=255)
     phone: str | None = Field(None, max_length=50)
     city: str | None = Field(None, max_length=255)
     source: str | None = Field(None, max_length=100)
