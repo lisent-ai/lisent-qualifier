@@ -1,4 +1,3 @@
-import asyncio
 import json
 import structlog
 from typing import AsyncGenerator
@@ -11,7 +10,6 @@ from app.api.deps import SessionRepoDep, ScoreRepoDep, get_conversation_handler
 from app.application.conversation.commands import SendMessageCommand
 from app.application.scoring.champ_extractor import extract_champ_task
 from app.application.qualification.handler import HandoffHandler
-from app.infrastructure.redis.client import get_redis
 from app.metrics import HANDOFF_COUNTER, INSTANT_HANDOFF_TRIGGERS
 
 log = structlog.get_logger(__name__)
@@ -92,35 +90,3 @@ async def stream_response(
         yield {"event": "done", "data": json.dumps({"session_id": session_id})}
 
     return EventSourceResponse(event_generator())
-
-
-@router.get("/score-stream/{session_id}")
-async def score_stream(
-    session_id: str,
-    request: Request,
-) -> EventSourceResponse:
-    """SSE stream for score updates from CHAMP extraction (Redis PubSub)."""
-
-    async def pubsub_generator() -> AsyncGenerator[dict, None]:
-        redis = get_redis()
-        pubsub = redis.pubsub()
-        await pubsub.subscribe(f"score:{session_id}")
-
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=30.0)
-                if msg and msg["type"] == "message":
-                    yield {"event": "score_update", "data": msg["data"]}
-                else:
-                    # Heartbeat to keep connection alive
-                    yield {"event": "heartbeat", "data": "{}"}
-
-                await asyncio.sleep(0.1)
-        finally:
-            await pubsub.unsubscribe(f"score:{session_id}")
-            await pubsub.aclose()
-
-    return EventSourceResponse(pubsub_generator())

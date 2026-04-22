@@ -1,17 +1,18 @@
 """
-RedisPubSubAdapter — Redis PubSub üzerinden event yayını + subscription.
-
-Mevcut `app.infrastructure.redis.score_repo.ScoreRepository` ZSET'e score
-time-series yazar; bu adapter ek olarak PubSub channel'a event publish eder ve
-SSE client'ları için subscription akışı sağlar.
+RedisPubSubAdapter — Redis PubSub üzerinden event yayını + subscription +
+resumable replay (SSE Last-Event-ID).
 
 Channel naming:
-    - `tenant:{tenant_id}` — tenant-wide event'ler
+    - `tenant:{tenant_id}` — tenant-wide events
     - `session:{session_id}` — session-specific (daha spesifik abone)
 
-Format: JSON-serialized ScoreEvent dict.
+Replay store:
+    - `score_events:{session_id}` (Redis ZSET) — JSON-serialized event as the
+      ZSET member, `timestamp_ms` (int) as the score. Clients that reconnect
+      with `Last-Event-ID` can fetch everything since that id via
+      `ZRANGEBYSCORE key (since +inf`.
 
-Phase 1.D.5 iskele — application layer Phase 1.E'de bu adapter'a switch edilecek.
+Format: JSON-serialized ScoreEvent dict with `event_id` (str) + `timestamp_ms`.
 """
 
 from __future__ import annotations
@@ -33,30 +34,44 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+# Match session TTL (24h) so replay store does not outlive the session.
+_REPLAY_TTL_SECONDS = 86400
+# Hard cap to stop the ZSET from growing unboundedly (extractions are minute-
+# scale so 500 is ~weeks of history in practice).
+_REPLAY_MAX_ENTRIES = 500
+
+
 class RedisPubSubAdapter(EventPort):
-    """EventPort over Redis PubSub channels."""
+    """EventPort over Redis PubSub channels + resumable ZSET replay store."""
 
     def __init__(self, redis: Redis) -> None:
         self._r = redis
 
     async def publish(self, event: ScoreEvent) -> None:
-        """Event'i ilgili kanallara yayınla (tenant + session)."""
-        payload = self._serialize(event)
+        """Publish to PubSub channels + persist to the replay ZSET.
 
-        # Tenant-wide channel
+        `event.timestamp` is used as the ZSET score (milliseconds). This makes
+        the replay query `ZRANGEBYSCORE score_events:{sid} (last_id +inf` an
+        O(log N + M) range fetch keyed on the client-supplied Last-Event-ID.
+        """
+        timestamp_ms = int(event.timestamp.timestamp() * 1000)
+        payload = self._serialize(event, event_id=str(timestamp_ms))
+
         tenant_channel = f"tenant:{event.tenant_id}"
         await self._r.publish(tenant_channel, payload)
 
-        # Session-specific channel (varsa)
         if event.session_id is not None:
             session_channel = f"session:{event.session_id}"
             await self._r.publish(session_channel, payload)
-            # Score history — mevcut ScoreRepository pattern'i (ZSET)
+
             if event.event_type in ("lead.scored", "score.updated", "champ.extracted"):
-                await self._r.zadd(
-                    f"scores:{event.session_id}",
-                    {str(event.score): event.timestamp.timestamp()},
-                )
+                replay_key = f"score_events:{event.session_id}"
+                pipe = self._r.pipeline()
+                pipe.zadd(replay_key, {payload: timestamp_ms})
+                # Trim oldest entries once we cross the cap.
+                pipe.zremrangebyrank(replay_key, 0, -(_REPLAY_MAX_ENTRIES + 1))
+                pipe.expire(replay_key, _REPLAY_TTL_SECONDS)
+                await pipe.execute()
 
         log.debug(
             "event_published",
@@ -64,6 +79,7 @@ class RedisPubSubAdapter(EventPort):
             tenant_id=str(event.tenant_id),
             session_id=str(event.session_id) if event.session_id else None,
             score=event.score,
+            event_id=timestamp_ms,
         )
 
     async def subscribe(
@@ -71,11 +87,11 @@ class RedisPubSubAdapter(EventPort):
         tenant_id: UUID,
         session_id: UUID | None = None,
     ) -> AsyncIterator[ScoreEvent]:
-        """Redis PubSub subscribe async iterator.
+        """Live event iterator via Redis PubSub.
 
         Usage (FastAPI SSE endpoint):
             async for event in event_port.subscribe(tenant_id, session_id):
-                yield f"data: {json.dumps(event_dict)}\\n\\n"
+                yield {"event": event.event_type, "data": ..., "id": ...}
         """
         channel = f"session:{session_id}" if session_id else f"tenant:{tenant_id}"
 
@@ -101,21 +117,49 @@ class RedisPubSubAdapter(EventPort):
             await pubsub.unsubscribe(channel)
             await pubsub.close()
 
+    async def replay(
+        self,
+        session_id: UUID,
+        since_event_id_ms: int = 0,
+        limit: int = _REPLAY_MAX_ENTRIES,
+    ) -> list[ScoreEvent]:
+        """Return stored events strictly after `since_event_id_ms` (timestamp).
+
+        Called by the SSE endpoint when the client reconnects with
+        `Last-Event-ID`. Returns events ordered by timestamp (ascending), so
+        the endpoint can re-emit them before flipping to the live subscription.
+        """
+        replay_key = f"score_events:{session_id}"
+        # Exclusive lower bound: `(since` (Redis syntax for open interval).
+        min_bound = f"({since_event_id_ms}" if since_event_id_ms > 0 else "-inf"
+        raw_entries = await self._r.zrangebyscore(
+            replay_key, min_bound, "+inf", start=0, num=limit
+        )
+
+        events: list[ScoreEvent] = []
+        for raw in raw_entries:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            try:
+                events.append(self._deserialize(raw, session_id))
+            except Exception as exc:
+                log.warning("replay_decode_failed", error=str(exc), raw=str(raw)[:200])
+        return events
+
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _serialize(event: ScoreEvent) -> str:
-        """ScoreEvent → JSON string. UUID ve datetime manuel serialize edilir."""
+    def _serialize(event: ScoreEvent, *, event_id: str) -> str:
         doc = asdict(event)
         doc["tenant_id"] = str(event.tenant_id)
         doc["lead_id"] = str(event.lead_id)
         doc["session_id"] = str(event.session_id) if event.session_id else None
         doc["timestamp"] = event.timestamp.isoformat()
+        doc["event_id"] = event_id
         return json.dumps(doc, separators=(",", ":"))
 
     @staticmethod
     def _deserialize(raw: str, default_tenant_id: UUID) -> ScoreEvent:
-        """JSON string → ScoreEvent."""
         doc = json.loads(raw)
         return ScoreEvent(
             tenant_id=UUID(doc.get("tenant_id", str(default_tenant_id))),
@@ -126,5 +170,7 @@ class RedisPubSubAdapter(EventPort):
             threshold=int(doc.get("threshold", 0)),
             path=doc.get("path", ""),
             payload=doc.get("payload") or {},
-            timestamp=datetime.fromisoformat(doc["timestamp"]) if doc.get("timestamp") else datetime.utcnow(),
+            timestamp=datetime.fromisoformat(doc["timestamp"])
+            if doc.get("timestamp")
+            else datetime.utcnow(),
         )

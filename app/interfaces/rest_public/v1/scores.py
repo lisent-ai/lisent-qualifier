@@ -20,17 +20,22 @@ Response kaynakları:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sse_starlette.sse import EventSourceResponse
 
 from app.infrastructure.db.pool import get_db_pool
+from app.infrastructure.redis.client import get_redis
 from app.interfaces.rest_public.auth import get_current_tenant
+from app.interfaces.rest_public.di import get_event_port
+from app.ports.event import EventPort, ScoreEvent
 from app.ports.tenant import Tenant
 
 log = structlog.get_logger(__name__)
@@ -311,4 +316,182 @@ async def get_lead_score(
         path=row.get("path"),
         scored_at=scored_at,
         explanation=explanation,
+    )
+
+
+# ============================================================================
+# Live score stream — GET /v1/leads/{id}/score-stream
+# ============================================================================
+#
+# Tenant-aware, resumable Server-Sent Events stream over the shared EventPort.
+# Cloudflare idles the connection at 100s, so we emit heartbeat frames every
+# 15s and rely on the browser's automatic `Last-Event-ID` reconnect to
+# transparently replay any events the client missed.
+
+
+# Matches the Redis pubsub timeout/heartbeat cadence. 15s is well under both
+# Cloudflare's 100s idle cutoff and most reverse-proxy defaults.
+_SSE_HEARTBEAT_SECONDS = 15.0
+# Hard upper bound on a single connection. Browsers reconnect transparently so
+# this just keeps server-side resources from leaking if the client goes away
+# without TCP FIN (e.g. laptop lid close).
+_SSE_MAX_CONNECTION_SECONDS = 600.0
+
+
+def _format_event(event: ScoreEvent) -> dict[str, str]:
+    """ScoreEvent → sse-starlette dict (name, id, data)."""
+    event_id_ms = int(event.timestamp.timestamp() * 1000)
+    data = {
+        "event_id": str(event_id_ms),
+        "tenant_id": str(event.tenant_id),
+        "lead_id": str(event.lead_id),
+        "session_id": str(event.session_id) if event.session_id else None,
+        "event_type": event.event_type,
+        "score": event.score,
+        "threshold": event.threshold,
+        "path": event.path,
+        "timestamp": event.timestamp.isoformat(),
+        "payload": event.payload,
+    }
+    return {
+        "event": event.event_type,
+        "id": str(event_id_ms),
+        "data": json.dumps(data, separators=(",", ":")),
+    }
+
+
+async def _resolve_live_session(
+    conn: Any, lead_id: UUID, tenant_id: UUID
+) -> UUID | None:
+    """Return the newest qualifier_sessions.id for this lead, scoped to tenant.
+
+    Returns None when the lead has no session yet (fast-path lead that never
+    started a chat). Caller converts that into a 404 — clients should fall back
+    to polling GET /v1/leads/{id}/score in that case.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT s.id AS session_id
+        FROM qualifier_leads l
+        JOIN qualifier_sessions s ON s.lead_id = l.id
+        WHERE l.id = $1 AND l.tenant_id = $2
+        ORDER BY s.updated_at DESC NULLS LAST, s.created_at DESC NULLS LAST
+        LIMIT 1
+        """,
+        lead_id,
+        tenant_id,
+    )
+    return row["session_id"] if row else None
+
+
+@router.get("/{lead_id}/score-stream")
+async def stream_lead_score(
+    lead_id: UUID,
+    request: Request,
+    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    event_port: Annotated[EventPort, Depends(get_event_port)],
+) -> EventSourceResponse:
+    """Live CHAMP score stream for a lead (SSE, resumable).
+
+    Auth: same as GET /score — platform admin token or tenant API key.
+    Replay: pass `Last-Event-ID` (ms-since-epoch) to resume from a reconnect.
+    Heartbeat every 15s; auto-close at 600s (browser reconnects transparently).
+
+    404: lead not found for this tenant, or lead has no session yet.
+    """
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(f"SET LOCAL app.tenant_id = '{tenant.id}'")
+            session_id = await _resolve_live_session(conn, lead_id, tenant.id)
+
+    if session_id is None:
+        raise HTTPException(404, "Lead not found or has no active session")
+
+    # Last-Event-ID — SSE spec: browsers auto-send it on reconnect.
+    last_event_id_raw = request.headers.get("last-event-id", "")
+    try:
+        since_ms = int(last_event_id_raw) if last_event_id_raw else 0
+    except ValueError:
+        since_ms = 0
+
+    async def event_generator():
+        redis = get_redis()
+        pubsub = redis.pubsub()
+        channel = f"session:{session_id}"
+        started_at = asyncio.get_event_loop().time()
+
+        # Subscribe BEFORE replay so we can't miss an event that lands between
+        # the replay query and the first get_message tick.
+        await pubsub.subscribe(channel)
+
+        try:
+            # ── Replay phase — stored events strictly after since_ms ────────
+            replayed = await event_port.replay(session_id, since_event_id_ms=since_ms)
+            for ev in replayed:
+                yield _format_event(ev)
+
+            # ── Live phase ──────────────────────────────────────────────────
+            while True:
+                if await request.is_disconnected():
+                    break
+                if asyncio.get_event_loop().time() - started_at > _SSE_MAX_CONNECTION_SECONDS:
+                    yield {"event": "done", "data": json.dumps({"reason": "max_connection_time"})}
+                    break
+
+                msg = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=_SSE_HEARTBEAT_SECONDS,
+                )
+                if msg and msg.get("type") == "message":
+                    raw = msg.get("data")
+                    if raw is None:
+                        continue
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8")
+                    try:
+                        doc = json.loads(raw)
+                    except json.JSONDecodeError:
+                        log.warning("sse_decode_failed", raw=str(raw)[:200])
+                        continue
+
+                    event = ScoreEvent(
+                        tenant_id=UUID(doc.get("tenant_id", str(tenant.id))),
+                        lead_id=UUID(doc["lead_id"]),
+                        session_id=UUID(doc["session_id"]) if doc.get("session_id") else None,
+                        event_type=doc["event_type"],
+                        score=int(doc.get("score", 0)),
+                        threshold=int(doc.get("threshold", 0)),
+                        path=doc.get("path", ""),
+                        payload=doc.get("payload") or {},
+                        timestamp=datetime.fromisoformat(doc["timestamp"])
+                        if doc.get("timestamp")
+                        else datetime.utcnow(),
+                    )
+                    # Cross-tenant defence-in-depth: channel is session-scoped,
+                    # but verify tenant_id in the event body in case a stale
+                    # publisher crossed wires.
+                    if event.tenant_id != tenant.id:
+                        log.warning(
+                            "sse_tenant_mismatch",
+                            expected=str(tenant.id),
+                            got=str(event.tenant_id),
+                        )
+                        continue
+                    yield _format_event(event)
+                else:
+                    # No message within the timeout → heartbeat.
+                    yield {"event": "heartbeat", "data": "{}"}
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+            finally:
+                await pubsub.close()
+
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
     )

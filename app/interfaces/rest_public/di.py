@@ -17,6 +17,7 @@ from functools import lru_cache
 
 import structlog
 
+from app.adapters.event import RedisPubSubAdapter
 from app.adapters.handoff import LisentCRMHandoffAdapter
 from app.adapters.knowledge import LisentCRMKBAdapter, PostgresKBAdapter
 from app.adapters.llm import GroqAdapter, LocalLlamaAdapter
@@ -26,6 +27,8 @@ from app.adapters.tenant import (
     StandaloneTenantAdapter,
 )
 from app.infrastructure.db.pool import get_db_pool
+from app.infrastructure.redis.client import get_redis
+from app.ports.event import EventPort
 from app.ports.handoff import HandoffPort
 from app.ports.knowledge import KnowledgePort
 from app.ports.llm import LLMPort
@@ -100,3 +103,18 @@ async def get_kb_adapter_lisent_crm() -> KnowledgePort:
     """LisentCRMKBAdapter for legacy tenants."""
     tenant_adapter = await get_tenant_adapter()
     return LisentCRMKBAdapter(tenant_resolver=tenant_adapter)
+
+
+# ============================================================================
+# Event
+# ============================================================================
+
+
+async def get_event_port() -> EventPort:
+    """Default event port — RedisPubSubAdapter over the shared Redis client.
+
+    Phase 2.D uses this single adapter for SSE publish+replay. In Phase 2.M a
+    CompositeEventAdapter chains the webhook fanout adapter here, so publishers
+    stay untouched when outbound webhooks land.
+    """
+    return RedisPubSubAdapter(get_redis())

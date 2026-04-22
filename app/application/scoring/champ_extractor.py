@@ -12,6 +12,8 @@ import asyncio
 import json
 import re
 import time
+from uuid import UUID
+
 import structlog
 
 from app.config import get_settings
@@ -20,15 +22,93 @@ from app.domain.scoring.qualification_judgment import QualificationJudgment
 from app.domain.scoring.composite_scorer import CompositeScorer, CompositeResult, ScoringWeights
 from app.domain.scoring.thresholds import compute_threshold
 from app.domain.scoring.engagement import compute_engagement_score
-from app.domain.scoring.events import ScoreEvent
 from app.domain.scoring.signals.registry import SignalRegistry
+from app.infrastructure.db.pool import get_db_pool
 from app.infrastructure.redis.session_repo import SessionRepository
 from app.infrastructure.redis.score_repo import ScoreRepository
 from app.infrastructure.llm import local_llm_client
 from app.application.crm_sync import try_update_ai_metadata
 from app.metrics import CHAMP_EXTRACTIONS, HANDOFF_COUNTER, SCORING_MODE_COMPARISON
+from app.ports.event import ScoreEvent
 
 log = structlog.get_logger(__name__)
+
+
+async def _resolve_tenant_and_lead(session_id: str) -> tuple[UUID | None, UUID | None]:
+    """Look up (tenant_id, lead_id) for a given session_id.
+
+    Returns (None, None) when the session row is missing or the DB call fails —
+    caller must treat the publish as best-effort.
+    """
+    try:
+        pool = get_db_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT l.tenant_id, l.id AS lead_id
+                FROM qualifier_sessions s
+                JOIN qualifier_leads l ON l.id = s.lead_id
+                WHERE s.id = $1::uuid
+                """,
+                session_id,
+            )
+    except Exception as exc:
+        log.warning("tenant_lookup_failed", session_id=session_id, error=str(exc))
+        return None, None
+    if row is None:
+        return None, None
+    return row["tenant_id"], row["lead_id"]
+
+
+async def _publish_score_event(
+    *,
+    session_id: str,
+    score: int,
+    threshold: int,
+    pre_score: int,
+    champ_json: dict,
+    engagement: dict,
+    composite: dict,
+) -> None:
+    """Fan out score update through EventPort (Redis PubSub + replay ZSET).
+
+    Best-effort: a failure here never blocks the scoring/handoff flow.
+    """
+    tenant_id, lead_id = await _resolve_tenant_and_lead(session_id)
+    if tenant_id is None or lead_id is None:
+        log.warning("score_event_skipped_no_tenant", session_id=session_id)
+        return
+
+    try:
+        session_uuid = UUID(session_id)
+    except (ValueError, TypeError):
+        log.warning("score_event_skipped_bad_session_uuid", session_id=session_id)
+        return
+
+    event = ScoreEvent(
+        tenant_id=tenant_id,
+        lead_id=lead_id,
+        session_id=session_uuid,
+        event_type="score.updated",
+        score=int(score),
+        threshold=int(threshold),
+        path="chat",
+        payload={
+            "pre_score": pre_score,
+            "qualified_score": score,
+            "score": score,
+            "champ": champ_json,
+            "engagement": engagement,
+            "composite": composite,
+        },
+    )
+
+    try:
+        from app.interfaces.rest_public.di import get_event_port
+        event_port = await get_event_port()
+        await event_port.publish(event)
+    except Exception as exc:
+        log.warning("score_event_publish_failed", session_id=session_id, error=str(exc))
 
 
 def _has_critical_missing_info(
@@ -235,7 +315,6 @@ async def extract_champ_task(
 
         # ── Update session ───────────────────────────────────────────────
         await session_repo.update_champ(session_id, champ_json, new_score)
-        await score_repo.record(session_id, new_score)
 
         # ── CRM write-through: mirror the new score + champ into CRM ────
         champ_breakdown = {
@@ -264,21 +343,25 @@ async def extract_champ_task(
             new_score=new_score,
         )
 
-        # ── Publish score update via Redis PubSub ────────────────────────
-        from app.infrastructure.redis.client import get_redis
-        redis = get_redis()
-        pre_score = (session.lead_json or {}).get("initial_fit_score", 0)
-        await redis.publish(
-            f"score:{session_id}",
-            json.dumps({
-                "session_id": session_id,
-                "pre_score": pre_score,
-                "qualified_score": new_score,
-                "score": new_score,  # backward compat
-                "champ": champ_json,
-                "engagement": eng_result.to_dict(),
-                "composite": result.to_dict(),
-            }),
+        # ── Threshold (used by both the event publish and the handoff chain)
+        lead_json = session.lead_json or {}
+        extra = lead_json.get("extra_data", {})
+        threshold = compute_threshold(
+            project_type=lead_json.get("project_type") or extra.get("project_type", ""),
+            budget_range=lead_json.get("budget_range") or extra.get("budget_range", ""),
+            company_config=company_config,
+        )
+
+        # ── Publish score update via EventPort (tenant-aware) ────────────
+        pre_score = int(lead_json.get("initial_fit_score", 0) or 0)
+        await _publish_score_event(
+            session_id=session_id,
+            score=new_score,
+            threshold=threshold,
+            pre_score=pre_score,
+            champ_json=champ_json,
+            engagement=eng_result.to_dict(),
+            composite=result.to_dict(),
         )
 
         # ── Handoff priority chain ────────────────────────────────────────
@@ -328,15 +411,7 @@ async def extract_champ_task(
                 await handler.handle(session_id)
                 return
 
-        # Priority 2: Score threshold (existing logic)
-        lead_json = session.lead_json or {}
-        extra = lead_json.get("extra_data", {})
-        threshold = compute_threshold(
-            project_type=lead_json.get("project_type") or extra.get("project_type", ""),
-            budget_range=lead_json.get("budget_range") or extra.get("budget_range", ""),
-            company_config=company_config,
-        )
-
+        # Priority 2: Score threshold (threshold computed above before publish)
         if new_score >= threshold:
             if too_early:
                 log.info(
