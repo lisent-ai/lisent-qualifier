@@ -8,6 +8,8 @@ Skor update + session event yayını:
     - Phase 2.N+: AuditLogAdapter (structured audit trail)
 """
 
+from app.adapters.event.composite import CompositeEventAdapter
 from app.adapters.event.redis_pubsub import RedisPubSubAdapter
+from app.adapters.event.webhook_fanout import WebhookFanoutAdapter
 
-__all__ = ["RedisPubSubAdapter"]
+__all__ = ["CompositeEventAdapter", "RedisPubSubAdapter", "WebhookFanoutAdapter"]

@@ -76,3 +76,34 @@ INSTANT_HANDOFF_TRIGGERS = Counter(
     "Instant handoff triggers by reason",
     ["reason"],
 )
+
+# ── Outbound webhook metrics (Phase 2.M) ────────────────────────────────────
+
+WEBHOOK_DELIVERY_ATTEMPTS = Counter(
+    "webhook_delivery_attempts_total",
+    "Outbound webhook delivery attempts",
+    ["tenant_id", "status"],  # status ∈ {success, retry, dlq}
+)
+
+WEBHOOK_DELIVERY_LATENCY = Histogram(
+    "webhook_delivery_latency_seconds",
+    "Single-attempt webhook delivery latency (request→response or error)",
+    ["tenant_id"],
+    buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+)
+
+WEBHOOK_QUEUE_DEPTH = Gauge(
+    "webhook_queue_depth",
+    "Current depth of the shared webhook delivery queue",
+)
+
+WEBHOOK_RETRY_DEPTH = Gauge(
+    "webhook_retry_depth",
+    "Current size of the webhook retry ZSET (jobs waiting for next attempt)",
+)
+
+WEBHOOK_DLQ_SIZE = Gauge(
+    "webhook_dlq_size",
+    "Per-tenant DLQ size (jobs exhausted all retries)",
+    ["tenant_id"],
+)

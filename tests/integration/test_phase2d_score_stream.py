@@ -63,18 +63,23 @@ async def admin_conn():
 
 
 async def _reset_tenant(admin_conn, slug: str) -> None:
+    # asyncpg prepare() forbids multi-statement SQL when $N params are used —
+    # split into three single-statement executes.
     await admin_conn.execute(
         """
         DELETE FROM qualifier_sessions WHERE lead_id IN (
             SELECT id FROM qualifier_leads WHERE tenant_id IN (
                 SELECT id FROM tenants WHERE slug=$1
             )
-        );
-        DELETE FROM qualifier_leads WHERE tenant_id IN (SELECT id FROM tenants WHERE slug=$1);
-        DELETE FROM tenants WHERE slug=$1;
+        )
         """,
         slug,
     )
+    await admin_conn.execute(
+        "DELETE FROM qualifier_leads WHERE tenant_id IN (SELECT id FROM tenants WHERE slug=$1)",
+        slug,
+    )
+    await admin_conn.execute("DELETE FROM tenants WHERE slug=$1", slug)
 
 
 @pytest.fixture

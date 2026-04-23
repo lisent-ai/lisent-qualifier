@@ -73,6 +73,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Start WhatsApp greeting worker
     greeting_task = asyncio.create_task(_greeting_worker())
 
+    # Phase 2.M — start outbound webhook worker (in-process asyncio).
+    # Tenants without outbound_webhook_url configured are silent no-ops.
+    webhook_worker = None
+    try:
+        from app.application.webhook import WebhookWorker
+        from app.infrastructure.db.pool import get_db_pool
+        from app.infrastructure.redis.client import get_redis
+
+        webhook_worker = WebhookWorker(get_redis(), get_db_pool())
+        await webhook_worker.start()
+    except Exception as exc:
+        log.warning("webhook_worker_start_failed", error=str(exc))
+        webhook_worker = None
+
     yield
 
     # Shutdown
@@ -84,6 +98,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await task
         except asyncio.CancelledError:
             pass
+    if webhook_worker is not None:
+        try:
+            await webhook_worker.stop()
+        except Exception as exc:
+            log.warning("webhook_worker_stop_failed", error=str(exc))
 
     await close_http_client()
     await close_groq_client()

@@ -17,7 +17,11 @@ from functools import lru_cache
 
 import structlog
 
-from app.adapters.event import RedisPubSubAdapter
+from app.adapters.event import (
+    CompositeEventAdapter,
+    RedisPubSubAdapter,
+    WebhookFanoutAdapter,
+)
 from app.adapters.handoff import LisentCRMHandoffAdapter
 from app.adapters.knowledge import LisentCRMKBAdapter, PostgresKBAdapter
 from app.adapters.llm import GroqAdapter, LocalLlamaAdapter
@@ -111,10 +115,15 @@ async def get_kb_adapter_lisent_crm() -> KnowledgePort:
 
 
 async def get_event_port() -> EventPort:
-    """Default event port — RedisPubSubAdapter over the shared Redis client.
+    """Default event port — CompositeEventAdapter(RedisPubSub, WebhookFanout).
 
-    Phase 2.D uses this single adapter for SSE publish+replay. In Phase 2.M a
-    CompositeEventAdapter chains the webhook fanout adapter here, so publishers
-    stay untouched when outbound webhooks land.
+    Phase 2.M: publish fan-outs to both adapters concurrently. Failures are
+    isolated — a webhook enqueue failure does not break SSE publish and vice
+    versa. subscribe/replay delegate to the first (Redis) adapter.
     """
-    return RedisPubSubAdapter(get_redis())
+    redis = get_redis()
+    pool = get_db_pool()
+    return CompositeEventAdapter(
+        RedisPubSubAdapter(redis),
+        WebhookFanoutAdapter(redis, pool),
+    )
