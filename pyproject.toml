@@ -23,6 +23,12 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "sse-starlette>=2.1.0",
     "asyncpg>=0.30.0",
+    # Phase 9 — global phone carrier/line_type offline (libphonenumber port)
+    "phonenumbers>=8.13",
+    # Phase 9 — DNS MX + SPF record lookups for email domain classification
+    "dnspython>=2.6",
+    # Phase 9 — WHOIS for domain age + registrar + registered org
+    "python-whois>=0.9",
 ]
 
 [project.optional-dependencies]

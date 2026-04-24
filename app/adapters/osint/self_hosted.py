@@ -177,20 +177,36 @@ class SelfHostedOSINTAdapter(OSINTPort):
         e164 = result.get("e164") or (f"+{digits}" if country else None)
         local_fmt = result.get("local")
 
+        # Phase 9.3.A — libphonenumber offline enrichment fills carrier +
+        # line_type that PhoneInfoga's local scanner cannot provide (would
+        # need a paid NUMVERIFY key). Works globally — Turkish, German, UAE,
+        # UK etc. numbers all get carrier/line_type via offline metadata.
+        from app.infrastructure.osint.phone_utils import enrich_phone_offline
+        lib_out = enrich_phone_offline(e164 or (f"+{digits}" if digits else None))
+
+        # PhoneInfoga wins on country/code/format (it's authoritative for
+        # what it does return); libphonenumber fills the gaps.
         signals = OSINTPhoneSignals(
-            e164=e164,
-            country=country,
-            country_code=int(country_code) if country_code else None,
+            e164=e164 or lib_out.get("e164"),
+            country=country or lib_out.get("country"),
+            country_code=(
+                int(country_code) if country_code
+                else lib_out.get("country_code")
+            ),
             local_format=local_fmt,
-            carrier=None,       # needs numverify (future)
-            line_type=None,     # needs numverify (future)
-            valid=bool(country),  # local scanner country → valid E.164 parse
+            carrier=lib_out.get("carrier"),
+            line_type=lib_out.get("line_type"),
+            valid=bool(country) or bool(lib_out.get("valid")),
         )
         notes = []
         if signals.country:
             notes.append(f"phone country={signals.country}")
         else:
             notes.append("phone: could not determine country")
+        if signals.carrier:
+            notes.append(f"phone carrier={signals.carrier}")
+        if signals.line_type and signals.line_type != "unknown":
+            notes.append(f"phone line_type={signals.line_type}")
         return signals, notes
 
     @circuit(failure_threshold=5, recovery_timeout=60, expected_exception=OSINTError)

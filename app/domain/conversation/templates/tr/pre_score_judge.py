@@ -108,6 +108,29 @@ başlamak'", "osint.email.registered_sites: ['linkedin','github']".
 yöneticisi, arsa sahibi, yatırımcı) — her biri farklı buying_stage / \
 authority kalıbı.
 
+## Türkçe Yazım Kuralları (sales_context için ZORUNLU)
+
+- **Türkçe diakritik eksiksiz**: ç, ş, ğ, ı, İ, ü, ö, Ç, Ş, Ğ, Ü, Ö. \
+Doğru: "şehir", "düşünüyor", "belirtmemiş", "büyük", "karar". Yanlış: \
+"sehir", "dusunuyor", "belirtmemis", "buyuk", "karar" yerine aksan \
+eksiltilmiş form. Diakritiksiz cevap satış ekibinde amatör görünür.
+- **Satış dili, rapor dili değil**: `recommended_opening` müşteri \
+hizmetleri ezber değil, bir satış direktörünün ilk aramada ağzından \
+çıkacak cümle. Aksiyon odaklı, net amaç, en fazla 2 cümle. Selamlama \
++ "şu konuyu netleştirmek için aradım" kalıbı.
+- **Boş veri → boş tekrar YOK**: form veya OSINT yetersizse (proje \
+tipi boş, bütçe yok, şehir yok, notes boş) boş alanları listeleme. \
+Uydurma da yapma. Bunun yerine `who_they_are`'a açık yaz: \
+"Yeterli sinyal yok — discovery call ile intent + bütçe + zaman + \
+karar verici netleştirilmeli." `company_or_buyer_profile`'a benzer: \
+"Profil tespit edilemedi, ilk aramada sınıflandırılmalı." \
+`key_questions_for_call` listesine 5 GERÇEK discovery sorusu koy \
+(niyet, bütçe, zaman, karar süreci, proje tipi).
+- **Uluslararası leadler**: lead Türkiye dışından da gelebilir (Körfez \
+yatırımcısı, Avrupalı developer, ABD merkezli fon). Kapsama alanını \
+`geography_in_scope` ve `segment_label` ile işaretle; sales_context \
+yazımın dili yine Türkçe (Lisent sales operatörü TR).
+
 ## Sektör & ICP Bağlamı
 
 Sektör: {sector}
@@ -388,6 +411,88 @@ FEW_SHOTS_TR_CONSTRUCTION = '''## Örnek 1 — IDEAL KURUMSAL LEAD (beklenen dir
   },
   "direct_score": 30,
   "extraction_confidence": 0.68
+}
+```
+
+## Örnek 4 — THIN DATA (beklenen direct_score: 18-28)
+
+Input:
+```json
+{
+  "form": {
+    "name": "Ayşe",
+    "email": "ayse.yildiz@gmail.com",
+    "phone": "+905551234567",
+    "city": "",
+    "notes": "",
+    "project_type": "",
+    "budget_range": ""
+  },
+  "osint": {
+    "phone": {"country": "TR", "carrier": "Turkcell", "line_type": "mobile", "valid": true},
+    "email": {"domain": "gmail.com", "domain_type": "freemail", "registered_sites": [], "site_count": 0}
+  }
+}
+```
+
+Expected output:
+```json
+{
+  "thinking": "Form sadece ad + freemail + TR mobile verisi taşıyor. Diğer \
+alanlar (şehir, notes, proje tipi, bütçe) boş. OSINT email'de registered_sites \
+bulunamadı (0 site). Bu, düşük niyet veya bilgi-toplama aşamasında bir kişi \
+işareti; ancak freemail TR mobile iyi niyetli ilk temas da olabilir. Uydurma \
+yapmam gerek değil — discovery call'la aydınlatılmalı.",
+  "identity": {
+    "name_quality": "weak",
+    "email_domain_class": "freemail",
+    "phone_validity": "valid_format",
+    "osint_digital_footprint": "none",
+    "evidence": ["form.name='Ayşe' (sadece ad, soyad yok)", "email.domain=gmail.com", "osint.email.site_count=0"]
+  },
+  "intent": {
+    "project_specificity": "none",
+    "budget_signal": "absent",
+    "timeline_signal": "absent",
+    "authority_signal": "absent",
+    "buying_stage": "curious_browsing",
+    "urgency_cues": [],
+    "evidence": ["form.notes boş", "form.project_type boş", "form.budget_range boş"]
+  },
+  "fit": {
+    "icp_alignment": "unknown",
+    "project_type_in_tenant_scope": "unknown",
+    "geography_in_scope": "unknown",
+    "company_size_fit": "unknown",
+    "segment_label": "Sınıflandırılmamış — discovery gerekli",
+    "evidence": ["form.city boş", "form.project_type boş"]
+  },
+  "risk": {
+    "disposable_email": false,
+    "suspicious_phone_pattern": false,
+    "data_inconsistency_count": 0,
+    "spam_indicator_count": 0,
+    "competitor_mentioned": false,
+    "evidence": []
+  },
+  "sales_context": {
+    "who_they_are": "Yeterli sinyal yok — discovery call ile intent + bütçe + zaman + karar verici netleştirilmeli. Freemail + TR mobil; bireysel araştırma aşamasında olabilir.",
+    "company_or_buyer_profile": "Profil tespit edilemedi. İlk aramada bireysel mi kurumsal mı ayrıştırılmalı.",
+    "recommended_opening": "Merhaba Ayşe Hanım, hangi projeyle ilgilendiğinizi öğrenmek için aradım. Kendi eviniz için mi, yatırım amaçlı mı düşünüyorsunuz?",
+    "risks_to_watch": [
+      "Form boş bırakıldı — düşük niyet ihtimali",
+      "Freemail — kurumsal bağlantı tespit edilemedi"
+    ],
+    "key_questions_for_call": [
+      "Hangi şehirde veya bölgede proje düşünüyorsunuz?",
+      "Villa, konut, arsa, ticari — hangi tip mülk ilginizi çekiyor?",
+      "Zaman planınız var mı — bu yıl mı sonraki yıl mı?",
+      "Bütçe aralığınız netleşti mi, yoksa araştırma aşamasında mısınız?",
+      "Kararı tek başınıza mı veriyorsunuz, yoksa aile veya ortakla mı?"
+    ]
+  },
+  "direct_score": 22,
+  "extraction_confidence": 0.55
 }
 ```
 '''

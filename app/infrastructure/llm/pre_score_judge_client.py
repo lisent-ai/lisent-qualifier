@@ -204,6 +204,13 @@ async def run_pre_score_persona(
         content = response.choices[0].message.content or ""
         result = _parse_judgment(content)
 
+        # Soft diacritics check — log + metric only, no retry. Some Groq
+        # models under low temperature strip Turkish diacritics ("sehir"
+        # instead of "şehir") which reads amateurish in the CRM panel.
+        # We surface this as observability so we can track % over time;
+        # retrying would double-spend Groq tokens for marginal gain.
+        _check_diacritics(persona, result)
+
         elapsed = time.monotonic() - start
         log.info(
             "pre_score_persona_completed",
@@ -223,3 +230,35 @@ async def run_pre_score_persona(
             elapsed_s=round(elapsed, 2),
         )
         raise
+
+
+_TR_DIACRITICS: frozenset[str] = frozenset("çşğıİüöÇŞĞÜÖ")
+
+
+def _check_diacritics(persona: str, result: PreScoreJudgmentResult) -> None:
+    """Warn + metric when sales_context Turkish fields come back stripped of
+    diacritics. 100-char floor avoids false positives on short English-like
+    segments; any one Turkish diacritic anywhere proves the model produced
+    proper Turkish."""
+    sc = result.sales_context
+    for field_name, txt in (
+        ("who_they_are", sc.who_they_are or ""),
+        ("company_or_buyer_profile", sc.company_or_buyer_profile or ""),
+        ("recommended_opening", sc.recommended_opening or ""),
+    ):
+        if len(txt) < 100:
+            continue
+        if any(c in _TR_DIACRITICS for c in txt):
+            continue
+        log.warning(
+            "pre_score_diacritics_missing",
+            persona=persona,
+            field=field_name,
+            sample=txt[:120],
+        )
+        try:
+            from app.metrics import PRESCORE_DIACRITICS_MISSING_TOTAL
+            PRESCORE_DIACRITICS_MISSING_TOTAL.labels(field=field_name).inc()
+        except (ImportError, AttributeError):
+            # Counter not wired yet (Track 5.A); swallow silently.
+            pass

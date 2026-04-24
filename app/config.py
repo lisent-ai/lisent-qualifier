@@ -55,8 +55,14 @@ class Settings(BaseSettings):
     # PostgreSQL (ai-lead-qualifier kendi instance'ı)
     database_url: str = "postgresql://app:qualifierpass@db:5432/lead_qualifier"
 
-    # Qualification Judge
-    qualification_judge_model: str = "llama-3.3-70b-versatile"
+    # Unified Groq model for:
+    #   - Pre-score 3-persona ensemble (no tools, deterministic JSON)
+    #   - Post-chat qualification judge (dormant until Phase 10)
+    #   - Domain intelligence lookup (with tools=[{"type":"browser_search"}])
+    # gpt-oss-120b has native browser_search, 81+ language support (Turkish
+    # MMMLU 81.3%), 131k context, json_object/json_schema response format.
+    # Pre-score is async so the ~500 tps latency is absorbed by the worker.
+    qualification_judge_model: str = "openai/gpt-oss-120b"
     qualification_judge_timeout: int = 30
     qualification_judge_max_tokens: int = 8192
     judge_borderline_low: int = 40
