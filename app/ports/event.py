@@ -23,6 +23,22 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+# Canonical registry of event types the qualifier knows how to emit or
+# forward. Grouped by category so the admin UI can present checkboxes.
+# Keep category labels stable — the frontend keys off them.
+EVENT_CATALOG: dict[str, list[str]] = {
+    "scoring": ["score.updated", "pre_score.judged", "lead.scored"],
+    "lifecycle": ["lead.created", "lead.updated", "lead.qualified"],
+    "pipeline": [
+        "lead.stage_changed",
+        "lead.won",
+        "lead.lost",
+        "lead.disqualified",
+    ],
+}
+
+EVENT_TYPES: frozenset[str] = frozenset(e for group in EVENT_CATALOG.values() for e in group)
+
 
 @dataclass
 class ScoreEvent:

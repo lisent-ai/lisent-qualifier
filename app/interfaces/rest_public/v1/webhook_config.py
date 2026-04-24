@@ -33,12 +33,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, HttpUrl
 
 from app.application.webhook.config import dlq_key
+from app.application.webhook.event_filter import validate_patterns
 from app.application.webhook.worker import invalidate_tenant_config_cache
 from app.infrastructure.db.pool import get_db_pool
 from app.infrastructure.redis.client import get_redis
 from app.interfaces.rest_public.auth import get_current_tenant
 from app.interfaces.rest_public.di import get_event_port
-from app.ports.event import EventPort, ScoreEvent
+from app.ports.event import EVENT_CATALOG, EVENT_TYPES, EventPort, ScoreEvent
 from app.ports.tenant import Tenant
 
 log = structlog.get_logger(__name__)
@@ -53,6 +54,9 @@ class WebhookConfigResponse(BaseModel):
     url: str | None
     has_secret: bool
     secret_rotated_at: datetime | None = None
+    enabled_events: list[str] = Field(default_factory=lambda: ["*"])
+    payload_mode: str = "full"
+    event_catalog: dict[str, list[str]] = Field(default_factory=dict)
     dlq_size: int
     recent_dlq: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -60,6 +64,11 @@ class WebhookConfigResponse(BaseModel):
 class WebhookPatchRequest(BaseModel):
     url: HttpUrl | None = None
     rotate_secret: bool = False
+    enabled_events: list[str] | None = None
+    payload_mode: str | None = Field(
+        default=None,
+        description="'full' (default, embed event payload) or 'minimal' (strip payload — consumer pulls via REST).",
+    )
 
 
 class WebhookPatchResponse(BaseModel):
@@ -70,6 +79,8 @@ class WebhookPatchResponse(BaseModel):
         description="Plaintext — returned ONCE on rotation or initial set. Persist client-side immediately.",
     )
     secret_rotated_at: datetime | None = None
+    enabled_events: list[str] = Field(default_factory=lambda: ["*"])
+    payload_mode: str = "full"
 
 
 class WebhookTestRequest(BaseModel):
@@ -102,6 +113,24 @@ async def _fetch_secret_meta(tenant_id: UUID) -> tuple[str | None, str | None, d
     if not row:
         return None, None, None
     return row["outbound_webhook_url"], row["outbound_webhook_secret"], row["rotated_at"]
+
+
+async def _fetch_filter_config(tenant_id: UUID) -> tuple[list[str], str]:
+    """Return `(enabled_events, payload_mode)` with defaults on miss."""
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT outbound_webhook_enabled_events, outbound_webhook_payload_mode
+            FROM tenants WHERE id = $1
+            """,
+            tenant_id,
+        )
+    if not row:
+        return ["*"], "full"
+    return list(row["outbound_webhook_enabled_events"] or ["*"]), (
+        row["outbound_webhook_payload_mode"] or "full"
+    )
 
 
 async def _read_dlq(tenant_id: UUID, limit: int = 10) -> tuple[int, list[dict[str, Any]]]:
@@ -139,11 +168,15 @@ async def get_webhook_config(
     tenant: Annotated[Tenant, Depends(get_current_tenant)],
 ) -> WebhookConfigResponse:
     url, secret, rotated_at = await _fetch_secret_meta(tenant.id)
+    enabled, payload_mode = await _fetch_filter_config(tenant.id)
     size, recent = await _read_dlq(tenant.id, limit=10)
     return WebhookConfigResponse(
         url=url,
         has_secret=bool(secret),
         secret_rotated_at=rotated_at,
+        enabled_events=enabled,
+        payload_mode=payload_mode,
+        event_catalog=EVENT_CATALOG,
         dlq_size=size,
         recent_dlq=recent,
     )
@@ -154,11 +187,35 @@ async def patch_webhook_config(
     body: WebhookPatchRequest,
     tenant: Annotated[Tenant, Depends(get_current_tenant)],
 ) -> WebhookPatchResponse:
-    if body.url is None and not body.rotate_secret:
+    if (
+        body.url is None
+        and not body.rotate_secret
+        and body.enabled_events is None
+        and body.payload_mode is None
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="supply url and/or rotate_secret=true",
+            detail="supply at least one of: url, rotate_secret, enabled_events, payload_mode",
         )
+
+    if body.payload_mode is not None and body.payload_mode not in ("full", "minimal"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="payload_mode must be 'full' or 'minimal'",
+        )
+
+    if body.enabled_events is not None:
+        if len(body.enabled_events) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="enabled_events cannot be empty — use ['*'] to allow all",
+            )
+        bad = validate_patterns(body.enabled_events, EVENT_TYPES)
+        if bad:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"unknown event pattern(s): {bad}",
+            )
 
     new_secret_plain: str | None = None
     rotated_at: datetime | None = None
@@ -185,7 +242,19 @@ async def patch_webhook_config(
         params.append(json.dumps({"outbound_webhook_secret_rotated_at": rotated_at.isoformat() + "+00:00"}))
         updates.append(f"config = config || ${len(params)}::jsonb")
 
-    query = f"UPDATE tenants SET {', '.join(updates)}, updated_at = now() WHERE id = $1 RETURNING outbound_webhook_url, outbound_webhook_secret"
+    if body.enabled_events is not None:
+        params.append(body.enabled_events)
+        updates.append(f"outbound_webhook_enabled_events = ${len(params)}::text[]")
+
+    if body.payload_mode is not None:
+        params.append(body.payload_mode)
+        updates.append(f"outbound_webhook_payload_mode = ${len(params)}")
+
+    query = (
+        f"UPDATE tenants SET {', '.join(updates)}, updated_at = now() WHERE id = $1 "
+        "RETURNING outbound_webhook_url, outbound_webhook_secret, "
+        "outbound_webhook_enabled_events, outbound_webhook_payload_mode"
+    )
     async with pool.acquire() as conn:
         row = await conn.fetchrow(query, *params)
 
@@ -203,6 +272,8 @@ async def patch_webhook_config(
         has_secret=bool(row["outbound_webhook_secret"]) if row else False,
         secret=new_secret_plain,
         secret_rotated_at=rotated_at,
+        enabled_events=list(row["outbound_webhook_enabled_events"] or ["*"]) if row else ["*"],
+        payload_mode=(row["outbound_webhook_payload_mode"] if row else None) or "full",
     )
 
 

@@ -291,7 +291,13 @@ class WebhookWorker:
 
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT outbound_webhook_url, outbound_webhook_secret FROM tenants WHERE id = $1::uuid",
+                """
+                SELECT outbound_webhook_url,
+                       outbound_webhook_secret,
+                       outbound_webhook_enabled_events,
+                       outbound_webhook_payload_mode
+                FROM tenants WHERE id = $1::uuid
+                """,
                 tenant_id,
             )
         if not row or not row["outbound_webhook_url"] or not row["outbound_webhook_secret"]:
@@ -305,10 +311,16 @@ class WebhookWorker:
             url=row["outbound_webhook_url"],
             secret=row["outbound_webhook_secret"],
         )
+        # Cache the full shape so the fanout adapter reads the same keys.
         await self._r.setex(
             key,
             TENANT_CONFIG_CACHE_TTL_SECONDS,
-            json.dumps({"url": cfg.url, "secret": cfg.secret}),
+            json.dumps({
+                "url": cfg.url,
+                "secret": cfg.secret,
+                "enabled_events": list(row["outbound_webhook_enabled_events"] or ["*"]),
+                "payload_mode": row["outbound_webhook_payload_mode"] or "full",
+            }),
         )
         return cfg
 
