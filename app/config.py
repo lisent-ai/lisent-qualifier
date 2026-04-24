@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     # Groq traffic; enable explicitly in prod via env var.
     prescore_worker_enabled: bool = False
 
+    # Phase 7.B — inbound CRM webhook listener (replaces REST PATCH of ai-metadata).
+    # CRM side exposes POST /internal/webhooks/qualifier/pre-score and verifies
+    # HMAC-SHA256 over `{timestamp_ms}.{body}` with the shared secret. When the
+    # listener flag is True we fan out `pre_score.judged` events to the URL;
+    # when the REST flag is True we ALSO PATCH ai-metadata via REST (dual-write).
+    # Rollout plan: listener on → observe 1 week → flip REST off.
+    crm_internal_webhook_url: str = ""
+    crm_internal_webhook_secret: str = ""
+    crm_webhook_listener_enabled: bool = False
+    prescore_crm_rest_enabled: bool = True
+    crm_internal_webhook_timeout: float = 5.0
+
     # OSINT (Phase 3)
     osint_enabled: bool = False
     osint_phoneinfoga_url: str = "http://phoneinfoga:5000"

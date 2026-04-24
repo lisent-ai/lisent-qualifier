@@ -63,6 +63,15 @@ services:
       PRE_SCORE_JUDGE_MAX_TOKENS: ${PRE_SCORE_JUDGE_MAX_TOKENS:-2048}
       PRE_SCORE_JUDGE_TIMEOUT: ${PRE_SCORE_JUDGE_TIMEOUT:-12}
       PRE_SCORE_DIVERGENCE_THRESHOLD: ${PRE_SCORE_DIVERGENCE_THRESHOLD:-20}
+      # Phase 7.B — inbound CRM webhook listener (replaces REST PATCH).
+      # Dual-write default: listener OFF + REST ON. Flip listener to true once
+      # the CRM side endpoint is deployed; leave REST true for 1 week of
+      # parallel-running, then set PRESCORE_CRM_REST_ENABLED=false.
+      CRM_INTERNAL_WEBHOOK_URL: ${CRM_INTERNAL_WEBHOOK_URL:-}
+      CRM_INTERNAL_WEBHOOK_SECRET: ${CRM_INTERNAL_WEBHOOK_SECRET:-}
+      CRM_WEBHOOK_LISTENER_ENABLED: ${CRM_WEBHOOK_LISTENER_ENABLED:-false}
+      PRESCORE_CRM_REST_ENABLED: ${PRESCORE_CRM_REST_ENABLED:-true}
+      CRM_INTERNAL_WEBHOOK_TIMEOUT: ${CRM_INTERNAL_WEBHOOK_TIMEOUT:-5.0}
     networks:
       - dokploy-network
 

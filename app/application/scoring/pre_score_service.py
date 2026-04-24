@@ -165,20 +165,31 @@ class PreScoreService:
             fallback=fallback,
         )
 
-        # Phase 7 — CRM ai_metadata PATCH (legacy CRM tenants only).
-        # The CRM-side lead mirror was created synchronously at intake by the
-        # router (try_create_or_upsert_crm_lead). Here we patch the CRM row
-        # with the finished score + path + breakdown so Lisent CRM admin
-        # panel sees ai_score update within seconds of lead receipt.
-        # Idempotent via `lead-pre-score-{crm_lead_id}` key; safe to retry.
+        # Phase 7 / 7.B — mirror the finished score onto the CRM lead row.
+        #
+        # Two delivery channels share this method during the 7.B rollout
+        # window. Both are keyed on `lead-pre-score-{crm_lead_id}` /
+        # `event_id` so repeated emission is a safe no-op.
+        #
+        #   - REST PATCH /internal/leads/{id}/ai-metadata     (legacy, pulled)
+        #   - POST /internal/webhooks/qualifier/pre-score     (7.B, pushed)
+        #
+        # Cutover sequence:
+        #   1. Deploy CRM listener           → REST_ENABLED=true, LISTENER=false  (today)
+        #   2. Enable listener fan-out       → REST_ENABLED=true, LISTENER=true   (dual-write)
+        #   3. After 1 week clean observation → REST_ENABLED=false, LISTENER=true (webhook-only)
         crm_lead_id = (lead_row.get("extra_data") or {}).get("crm_lead_id")
         if crm_lead_id:
             await self._push_crm_ai_metadata(
+                tenant_id=tenant_id,
+                lead_id=lead_id,
                 crm_lead_id=str(crm_lead_id),
                 final_score=final_score,
+                threshold=qualification_threshold,
                 path=path,
                 ensemble=ensemble,
                 fallback=fallback,
+                osint_profile=osint_profile,
             )
 
         outcome = PreScoreServiceOutcome(
@@ -401,27 +412,34 @@ class PreScoreService:
     async def _push_crm_ai_metadata(
         self,
         *,
+        tenant_id: UUID,
+        lead_id: UUID,
         crm_lead_id: str,
         final_score: int,
+        threshold: int,
         path: str,
         ensemble: EnsembleResult | None,
         fallback: FallbackScore | None,
+        osint_profile: OSINTProfile,
     ) -> None:
-        """PATCH CRM /internal/leads/{id}/ai-metadata with final score + path.
+        """Push final score + path + breakdown to the CRM.
 
-        Legacy Lisent CRM panel reads `ai_score`, `ai_status`, `ai_path`,
-        `ai_score_breakdown` columns. This keeps them in sync with the
-        async pipeline result. Idempotent; silent on failure.
+        Two delivery channels are gated independently so the 7.B rollout can
+        run dual-write for a week before cutting REST off:
 
-        NOTE: Phase 7.B will switch this to a CRM-side webhook listener
-        consuming `pre_score.judged` events. For now REST PATCH.
+            crm_webhook_listener_enabled → POST webhook (7.B push)
+            prescore_crm_rest_enabled    → PATCH REST  (legacy pull)
+
+        Both idempotent on the CRM side (event_id / idempotency_key).
+        Failures are logged and swallowed — CRM unavailability must not
+        crash the scoring pipeline.
         """
-        try:
-            from app.application.crm_sync import try_update_ai_metadata
-        except ImportError as exc:
-            log.warning("crm_sync_import_failed", error=str(exc))
-            return
+        from app.config import get_settings
 
+        settings = get_settings()
+
+        # Shared payload shapes — computed once, used by both channels so
+        # they stay byte-identical during dual-write.
         status_label = "qualified" if path == "fast" else "new"
         breakdown_payload: dict[str, Any] = {"fit_score": final_score}
         if ensemble is not None:
@@ -432,7 +450,6 @@ class PreScoreService:
                 "extraction_confidence": round(ensemble.extraction_confidence, 3),
                 "persona_scores": ensemble.persona_scores,
             }
-            # Include sales_context so sales team sees prep on CRM panel
             breakdown_payload["sales_context"] = (
                 ensemble.aggregated_signals.sales_context.model_dump()
             )
@@ -442,18 +459,61 @@ class PreScoreService:
                 "total": fallback.total,
             }
 
-        try:
-            await try_update_ai_metadata(
-                crm_lead_id,
-                score=final_score,
-                status=status_label,
-                score_breakdown=breakdown_payload,
-                path=path,
-                idempotency_key=f"lead-pre-score-{crm_lead_id}",
-            )
-        except Exception as exc:
-            log.warning(
-                "crm_ai_metadata_patch_failed",
-                crm_lead_id=crm_lead_id,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+        # Channel 1 — Phase 7.B webhook push.
+        if settings.crm_webhook_listener_enabled:
+            try:
+                from app.infrastructure.crm.internal_webhook_client import (
+                    get_crm_internal_webhook_client,
+                )
+                client = get_crm_internal_webhook_client()
+                if client.enabled():
+                    payload = {
+                        "ensemble": breakdown_payload.get("pre_score_ensemble"),
+                        "fallback": breakdown_payload.get("pre_score_fallback"),
+                        "sales_context": breakdown_payload.get("sales_context"),
+                        "osint": {
+                            "provider": osint_profile.provider,
+                            "cache_hit": osint_profile.cache_hit,
+                            "phone_country": osint_profile.phone.country,
+                            "email_domain_type": osint_profile.email.domain_type,
+                            "email_site_count": osint_profile.email.site_count,
+                        },
+                    }
+                    # Drop nil keys so the CRM's breakdown builder sees only
+                    # the sections that actually apply to this event.
+                    payload = {k: v for k, v in payload.items() if v is not None}
+                    await client.send_pre_score(
+                        tenant_id=str(tenant_id),
+                        lead_id=str(lead_id),
+                        crm_lead_id=crm_lead_id,
+                        score=final_score,
+                        threshold=threshold,
+                        path=path,
+                        payload=payload,
+                        event_id=f"pre-score-{crm_lead_id}",
+                    )
+            except Exception as exc:
+                log.warning(
+                    "crm_internal_webhook_dispatch_failed",
+                    crm_lead_id=crm_lead_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+
+        # Channel 2 — legacy REST PATCH. Default-ON during 7.B dual-write.
+        if settings.prescore_crm_rest_enabled:
+            try:
+                from app.application.crm_sync import try_update_ai_metadata
+                await try_update_ai_metadata(
+                    crm_lead_id,
+                    score=final_score,
+                    status=status_label,
+                    score_breakdown=breakdown_payload,
+                    path=path,
+                    idempotency_key=f"lead-pre-score-{crm_lead_id}",
+                )
+            except Exception as exc:
+                log.warning(
+                    "crm_ai_metadata_patch_failed",
+                    crm_lead_id=crm_lead_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
