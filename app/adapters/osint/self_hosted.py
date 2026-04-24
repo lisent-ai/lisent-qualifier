@@ -212,13 +212,12 @@ class SelfHostedOSINTAdapter(OSINTPort):
             notes.append("phone: could not determine country")
         if signals.carrier:
             notes.append(f"phone carrier={signals.carrier}")
-            try:
-                from app.metrics import OSINT_PHONE_CARRIER_FILLED_TOTAL
-                OSINT_PHONE_CARRIER_FILLED_TOTAL.inc()
-            except ImportError:
-                pass
         if signals.line_type and signals.line_type != "unknown":
             notes.append(f"phone line_type={signals.line_type}")
+        # Carrier metric is incremented in PreScoreService after the
+        # cache layer resolves — counting on fresh fetches only would
+        # under-report once DBCachedOSINTAdapter warms up (~80% cache
+        # hit after day 2 of any given tenant).
         return signals, notes
 
     @circuit(failure_threshold=5, recovery_timeout=60, expected_exception=OSINTError)

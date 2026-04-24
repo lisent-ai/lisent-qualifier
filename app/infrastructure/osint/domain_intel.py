@@ -40,7 +40,7 @@ log = structlog.get_logger(__name__)
 _CRT_SH_TIMEOUT = 4.0
 _WHOIS_TIMEOUT = 5.0
 _DNS_TIMEOUT = 2.0
-_LLM_TIMEOUT = 25.0
+_LLM_TIMEOUT = 45.0  # browser_search tool call + synthesis can take 15-30s
 
 _ORG_RDN_RE = re.compile(r"(?:\bO=)([^,+/]+)", re.IGNORECASE)
 _COMPOUND_TLD_RE = re.compile(r"\.(com|org|net|edu|gov)\.(\w{2})$")
@@ -206,29 +206,40 @@ async def crt_sh_lookup(domain: str, client: httpx.AsyncClient) -> dict[str, Any
 
 
 _DOMAIN_INTEL_SYSTEM = (
-    "Sen bir B2B inşaat satış ekibinin araştırmacısısın. Görevin: verilen "
-    "email domain'inin hangi şirkete ait olduğunu web araması yaparak "
-    "belirlemek ve JSON döndürmek. Türkçe şirketler için Ticaret Sicili veya "
-    "LinkedIn öncelikli. Sadece JSON döndür, başka metin ekleme."
+    "You are a B2B research agent for a construction sales team. "
+    "**You MUST call the `browser_search` tool at least once before you "
+    "respond.** Do not guess the company from the domain name; search the "
+    "live web. For Turkish domains prioritize Ticaret Sicili Gazetesi and "
+    "LinkedIn results. After searching, synthesize findings into a single "
+    "JSON object — no prose, no markdown, JSON only. Missing fields are "
+    "not acceptable; use null or the appropriate 'unknown' enum value."
 )
 
 _DOMAIN_INTEL_USER = (
+    "Research this email domain and identify the owning company.\n\n"
     "Domain: {domain}\n"
-    "İpuçları (DNS/WHOIS/SSL cert'ten):\n{hints}\n\n"
-    "JSON şema:\n"
+    "Known hints (DNS/WHOIS/SSL — use to steer the search, not to replace "
+    "it):\n{hints}\n\n"
+    "Step 1: Call `browser_search` with a specific query about the "
+    "domain (examples: `\"{domain}\" company`, `\"{domain}\" LinkedIn`, "
+    "`site:{domain}`, or for .com.tr/.edu.tr a Turkish trade-registry "
+    "search).\n"
+    "Step 2: After reading the search results, return exactly this JSON:\n"
     "{{\n"
-    '  "company_name": "bulabilirsen; aksi halde null",\n'
+    '  "company_name": "<legal entity name if found, else null>",\n'
     '  "industry": "construction | real_estate | retail | finance | '
-    'technology | manufacturing | services | other",\n'
+    'technology | manufacturing | services | other | unknown",\n'
     '  "size_estimate": "small | medium | large | enterprise | unknown",\n'
-    '  "country": "ISO-2 kod (TR, DE, GB, AE, ...)",\n'
-    '  "is_legitimate_business": true,\n'
-    '  "confidence": 0.0,\n'
+    '  "country": "<ISO-2 code, e.g. TR, DE, GB, AE — or null>",\n'
+    '  "is_legitimate_business": <bool>,\n'
+    '  "confidence": <0.0-1.0>,\n'
     '  "source_urls": ["<url1>", "<url2>"]\n'
     "}}\n\n"
-    "Eğer domain bilinen bir consumer hizmeti (freemail, disposable, "
-    "test-domain) ise company_name=null ve is_legitimate_business=false "
-    "yaz. Hiç web sonucu bulamazsan confidence=0.0 döndür."
+    "If the domain is obviously freemail/disposable/test, you can skip "
+    "deep research — set company_name=null, is_legitimate_business=false, "
+    "confidence=0 — but you must still make one browser_search call to "
+    "verify it is a known consumer provider. No matter what you return, "
+    "the JSON fields above are all required."
 )
 
 
@@ -257,14 +268,19 @@ async def enrich_domain_via_llm(
         },
     ]
     try:
+        # Note: `reasoning_effort` intentionally NOT passed. Groq's
+        # gpt-oss-120b has a documented bug where low reasoning_effort
+        # causes it to silently ignore tool calls (see community thread
+        # #385). Default (medium) reliably invokes browser_search.
+        # max_tokens 1024 → 2048 to cover the search-result synthesis +
+        # JSON emit without truncation.
         resp = await asyncio.wait_for(
             llm_client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=[{"type": "browser_search"}],
                 response_format={"type": "json_object"},
-                reasoning_effort="low",
-                max_tokens=1024,
+                max_tokens=2048,
             ),
             timeout=_LLM_TIMEOUT,
         )

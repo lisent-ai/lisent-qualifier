@@ -130,6 +130,18 @@ class PreScoreService:
         form = self._extract_form(lead_row)
         osint_profile = await self._run_osint(tenant_id, form)
 
+        # Phase 9.5.A — count carrier population on every lead the service
+        # scores (fresh fetch OR cache hit). Placing it here instead of
+        # inside _fetch_phone avoids under-reporting once the 60-day cache
+        # warms — by then most leads reach OSINTProfile via the cached path
+        # and the adapter-internal hook never fires.
+        try:
+            from app.metrics import OSINT_PHONE_CARRIER_FILLED_TOTAL
+            if osint_profile.phone.carrier:
+                OSINT_PHONE_CARRIER_FILLED_TOTAL.inc()
+        except ImportError:
+            pass
+
         # Try ensemble; on total failure, either propagate for a worker retry
         # (early attempts — bursty rate-limit recovers within a minute) or
         # fall back to data-quality scoring if this is the last attempt.
