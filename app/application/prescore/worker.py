@@ -322,22 +322,29 @@ class PreScoreWorker:
     # ─────────────────────────────────────────────────────────── sweeper
 
     async def _sweeper_loop(self) -> None:
-        """Reconcile orphan leads: rows with score=0 that never hit the
-        prescore queue (e.g. router enqueued a Redis RPUSH failure and
-        stamped extra_data.enqueue_failed=true). Re-enqueue them so the
-        pipeline makes progress without operator action.
+        """Reconcile leads that were stamped `enqueue_failed=true` by the
+        router (Redis RPUSH hiccup). Re-enqueue so the pipeline makes
+        progress without operator action.
 
-        Also picks up any legacy score=0 row older than the grace window
-        even without the flag — safety net for crashes between INSERT and
-        the soft-fail mark path.
+        Design note: we do NOT sweep silent orphans (score=0 with no
+        flag). Earlier iteration did — it turned into a feedback loop
+        because the same rows re-surfaced every cycle faster than the
+        worker could drain them, causing the queue to grow unboundedly.
+        A real orphan without the flag is an operational concern that
+        needs human review, not automatic retry.
+
+        Re-enqueue guard: if a lead was already requeued less than
+        `REQUEUE_COOLDOWN_MIN` ago, skip it. Lets the worker finish
+        current attempts before we pile on more.
         """
         from app.application.prescore.queue import enqueue_lead
 
         SWEEP_INTERVAL_S = 60.0
-        # Grace window so we don't race the normal intake path: leads still
-        # in flight (CRM mirror + DB insert + enqueue) finish within seconds.
         GRACE_MINUTES = 5
-        BATCH_SIZE = 25
+        # Minimum gap between re-enqueues of the same lead — gives the
+        # worker time to drain.
+        REQUEUE_COOLDOWN_MIN = 15
+        BATCH_SIZE = 10
 
         while not self._stop_event.is_set():
             await self._sleep(SWEEP_INTERVAL_S)
@@ -356,15 +363,17 @@ class PreScoreWorker:
                         WHERE score = 0
                           AND tenant_id IS NOT NULL
                           AND created_at < NOW() - INTERVAL '{GRACE_MINUTES} minutes'
+                          -- Only act on leads the router explicitly marked.
                           AND (
                                 (extra_data->>'enqueue_failed')::boolean IS TRUE
                              OR extra_data->>'enqueue_failed' = 'true'
-                             OR (
-                                  -- Silent orphan fallback: row is old,
-                                  -- no in-flight marker, not yet scored.
-                                  extra_data->>'enqueue_failed' IS NULL
-                                  AND created_at < NOW() - INTERVAL '15 minutes'
-                                )
+                          )
+                          -- Cooldown: don't pile on if we already retried
+                          -- within the window.
+                          AND (
+                                extra_data->>'reenqueued_at' IS NULL
+                             OR (extra_data->>'reenqueued_at')::timestamptz
+                                  < NOW() - INTERVAL '{REQUEUE_COOLDOWN_MIN} minutes'
                           )
                         ORDER BY created_at ASC
                         LIMIT {BATCH_SIZE}
