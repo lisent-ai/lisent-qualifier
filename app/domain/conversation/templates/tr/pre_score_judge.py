@@ -156,6 +156,24 @@ değil.
 **Bias yasağı**: "corporate_suspected" veya "freemail" gibi öznel/ \
 damgalayıcı terim üretme. Yukarıdaki objektif enum'a bağlı kal.
 
+## Intake kalitesi uyarıları (form.intake_quality_flags)
+
+Input formunda `intake_quality_flags` listesi varsa bunları \
+risks_to_watch'a doğrudan yansıt:
+
+- `low_mapping_confidence`: payload'dan gelen alanlar eksik/mapper \
+tanıyamadı. "Form verisinden alanlar çıkarılamadı" notu ekle.
+- `broken_contact_fields`: name/phone/email alanlarından bazıları \
+syntax olarak geçersiz (örn. isim alanında telefon, email formatı \
+yanlış). "İletişim bilgileri geçersiz formatta — aramadan önce \
+teyit gerekiyor" notunu yaz.
+- `suspicious_duplicate_phone`: aynı telefon son 1 saatte 5+ kere \
+geldi. "Aynı telefon birden fazla lead'de kullanıldı — toplu spam \
+veya test trafiği olabilir" notunu yaz.
+
+Bu flag'ler kanıt değil — kesin yorum yapma, sadece aramacıya uyarı \
+olarak iletmek için risks_to_watch'a koy.
+
 ## Sektör & ICP Bağlamı
 
 Sektör: {sector}

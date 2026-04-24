@@ -386,35 +386,88 @@ async def map_fields(payload: dict[str, Any]) -> FieldMappingResult:
         return heur
 
 
+def _field_looks_plausible(field_name: str, value: str) -> bool:
+    """True when `value` syntactically matches what its field should hold.
+
+    Guards the confidence heuristic from counting garbage-in-valid-slot
+    situations (phone = "abc-123", email = "not-an-email", name =
+    "+905551234567"). The LLM scorer still catches these via its
+    risk.evidence output, but flagging them at intake lets the prompt
+    see `low_mapping_confidence` and phrase the risk explicitly in
+    sales_context instead of relying on the model to notice.
+    """
+    if not value:
+        return False
+    v = str(value).strip()
+    if field_name == "email":
+        # Minimum plausible email: x@y.z
+        return "@" in v and "." in v.rsplit("@", 1)[-1] and len(v) >= 5
+    if field_name == "phone":
+        digits = sum(1 for c in v if c.isdigit())
+        letters = sum(1 for c in v if c.isalpha())
+        # At least 7 digits, no letters (country-code formats like
+        # "+90 (532)" are fine — letters disqualify).
+        return digits >= 7 and letters == 0
+    if field_name == "name":
+        # Names never contain @ or +; and should be ≥2 chars of mostly
+        # letters (allowing accented TR chars, apostrophes, dots, spaces).
+        if "@" in v or "+" in v:
+            return False
+        plausible_chars = sum(
+            1 for c in v if c.isalpha() or c in " .'-"
+        )
+        return len(v) >= 2 and plausible_chars / max(len(v), 1) > 0.7
+    # project_type / budget_range are enum-ish strings — trust the
+    # mapper's output unless the value is literally "null"/"none".
+    return v.lower() not in {"null", "none", "n/a", "undefined"}
+
+
 def _attach_confidence_and_flags(r: FieldMappingResult) -> None:
     """Phase 9.4 — stamp mapping_confidence + quality_flags onto the result.
 
-    Heuristic: count how many critical fields (name, phone, email,
-    project_type, budget_range) the mapper filled. More filled = higher
-    confidence. Low confidence triggers a low_mapping_confidence flag so
-    the downstream prompt can surface the uncertainty.
+    Count how many critical fields (name, phone, email, project_type,
+    budget_range) the mapper filled AND look plausible for their slot.
+    Plausibility check guards against garbage-in-valid-slot (phone =
+    "abc-123", email = "not-an-email", name = "+905551234567") —
+    without it, 3 wrong fields counted the same as 3 correct fields
+    and the low_mapping_confidence flag never fired for clearly broken
+    payloads.
 
     Mutates in-place — FieldMappingResult is a Pydantic BaseModel; we
     only touch the two Phase-9-added fields.
     """
-    critical_filled = sum([
-        bool(r.full_name),
-        bool(r.phone),
-        bool(r.email),
-        bool(r.project_type),
-        bool(r.budget_range),
+    plausible_filled = sum([
+        _field_looks_plausible("name", r.full_name),
+        _field_looks_plausible("phone", r.phone),
+        _field_looks_plausible("email", r.email),
+        _field_looks_plausible("project_type", r.project_type),
+        _field_looks_plausible("budget_range", r.budget_range),
     ])
     # LLM path may have set a confidence via its own self-report; only
     # stomp it when the default (1.0) suggests no signal was provided.
     if r.mapping_confidence == 1.0:
-        if critical_filled >= 4:
+        if plausible_filled >= 4:
             r.mapping_confidence = 0.95
-        elif critical_filled >= 2:
-            r.mapping_confidence = 0.6
-        elif critical_filled == 1:
-            r.mapping_confidence = 0.3
+        elif plausible_filled >= 3:
+            r.mapping_confidence = 0.7
+        elif plausible_filled >= 2:
+            r.mapping_confidence = 0.4
+        elif plausible_filled == 1:
+            r.mapping_confidence = 0.2
         else:
             r.mapping_confidence = 0.1
 
     if r.mapping_confidence < 0.3 and "low_mapping_confidence" not in r.quality_flags:
         r.quality_flags.append("low_mapping_confidence")
+
+    # Sanity flag: if the mapper filled name/email/phone but some of
+    # them failed plausibility, surface that too — the prompt gets to
+    # warn the caller that the contact info is broken.
+    if (r.full_name or r.phone or r.email):
+        any_broken = (
+            (r.full_name and not _field_looks_plausible("name", r.full_name))
+            or (r.phone and not _field_looks_plausible("phone", r.phone))
+            or (r.email and not _field_looks_plausible("email", r.email))
+        )
+        if any_broken and "broken_contact_fields" not in r.quality_flags:
+            r.quality_flags.append("broken_contact_fields")
