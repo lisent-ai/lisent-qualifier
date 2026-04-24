@@ -165,6 +165,22 @@ class PreScoreService:
             fallback=fallback,
         )
 
+        # Phase 7 — CRM ai_metadata PATCH (legacy CRM tenants only).
+        # The CRM-side lead mirror was created synchronously at intake by the
+        # router (try_create_or_upsert_crm_lead). Here we patch the CRM row
+        # with the finished score + path + breakdown so Lisent CRM admin
+        # panel sees ai_score update within seconds of lead receipt.
+        # Idempotent via `lead-pre-score-{crm_lead_id}` key; safe to retry.
+        crm_lead_id = (lead_row.get("extra_data") or {}).get("crm_lead_id")
+        if crm_lead_id:
+            await self._push_crm_ai_metadata(
+                crm_lead_id=str(crm_lead_id),
+                final_score=final_score,
+                path=path,
+                ensemble=ensemble,
+                fallback=fallback,
+            )
+
         outcome = PreScoreServiceOutcome(
             lead_id=lead_id,
             tenant_id=tenant_id,
@@ -379,5 +395,65 @@ class PreScoreService:
                 "pre_score_event_publish_failed",
                 tenant_id=str(tenant_id),
                 lead_id=str(lead_id),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    async def _push_crm_ai_metadata(
+        self,
+        *,
+        crm_lead_id: str,
+        final_score: int,
+        path: str,
+        ensemble: EnsembleResult | None,
+        fallback: FallbackScore | None,
+    ) -> None:
+        """PATCH CRM /internal/leads/{id}/ai-metadata with final score + path.
+
+        Legacy Lisent CRM panel reads `ai_score`, `ai_status`, `ai_path`,
+        `ai_score_breakdown` columns. This keeps them in sync with the
+        async pipeline result. Idempotent; silent on failure.
+
+        NOTE: Phase 7.B will switch this to a CRM-side webhook listener
+        consuming `pre_score.judged` events. For now REST PATCH.
+        """
+        try:
+            from app.application.crm_sync import try_update_ai_metadata
+        except ImportError as exc:
+            log.warning("crm_sync_import_failed", error=str(exc))
+            return
+
+        status_label = "qualified" if path == "fast" else "new"
+        breakdown_payload: dict[str, Any] = {"fit_score": final_score}
+        if ensemble is not None:
+            breakdown_payload["pre_score_ensemble"] = {
+                "median_direct_score": ensemble.median_direct_score,
+                "formula_audit_score": ensemble.formula_audit_score,
+                "divergent": ensemble.divergent,
+                "extraction_confidence": round(ensemble.extraction_confidence, 3),
+                "persona_scores": ensemble.persona_scores,
+            }
+            # Include sales_context so sales team sees prep on CRM panel
+            breakdown_payload["sales_context"] = (
+                ensemble.aggregated_signals.sales_context.model_dump()
+            )
+        if fallback is not None:
+            breakdown_payload["pre_score_fallback"] = {
+                "reason": fallback.reason,
+                "total": fallback.total,
+            }
+
+        try:
+            await try_update_ai_metadata(
+                crm_lead_id,
+                score=final_score,
+                status=status_label,
+                score_breakdown=breakdown_payload,
+                path=path,
+                idempotency_key=f"lead-pre-score-{crm_lead_id}",
+            )
+        except Exception as exc:
+            log.warning(
+                "crm_ai_metadata_patch_failed",
+                crm_lead_id=crm_lead_id,
                 error=f"{type(exc).__name__}: {exc}",
             )

@@ -4,12 +4,13 @@ WhatsApp greeting worker — queue'dan sırayla job alıp WhatsApp greeting gön
 Her company için sıralı çalışır (aynı anda birden fazla mesaj göndermez).
 """
 import asyncio
+
 import structlog
 
-from app.infrastructure.redis.session_repo import SessionRepository
-from app.infrastructure.redis.score_repo import ScoreRepository
 from app.infrastructure.crm.rest_client import lookup_greenapi_by_company
 from app.infrastructure.greenapi.client import send_whatsapp_message
+from app.infrastructure.redis.score_repo import ScoreRepository
+from app.infrastructure.redis.session_repo import SessionRepository
 
 log = structlog.get_logger(__name__)
 

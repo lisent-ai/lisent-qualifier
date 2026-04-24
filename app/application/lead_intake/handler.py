@@ -1,355 +1,66 @@
+"""ProcessWebhookLeadHandler — thin intake gate.
+
+Phase 7 (2026-04-24): Legacy sync scoring removed. The handler now only
+performs idempotency dedup; all downstream work (DB INSERT, pre-score
+enqueue, CRM writeback, event publish) happens in the router + PreScoreWorker.
+
+Responsibilities:
+    1. Increment intake counter.
+    2. Atomic dedup via Redis `dedup:{lead_id}` (SET NX + TTL). If duplicate,
+       return early with {"status": "duplicate"}; router skips DB work.
+    3. Otherwise return {"status": "accepted"}; router proceeds with
+       INSERT qualifier_leads (score=0) + enqueue_lead.
+
+Chat path + WhatsApp greeting + CRM fast-path handoff are NOT invoked from
+here anymore — they are future work (Phase 8+) to be rebuilt on top of the
+new async pipeline, if needed. The greeting_worker module is still present
+but its queue is dormant until a future re-integration.
 """
-ProcessWebhookLeadHandler:
-  score >= threshold → local LLM reasoning_report → CRM  (fast path)
-  score  < threshold → create Redis session (PENDING) → wait for user to start AI
-"""
-import uuid
-import structlog
+from __future__ import annotations
+
 from typing import Any
 
-from app.config import get_settings
-from app.domain.lead.entities import Lead, ContactInfo
-from app.domain.lead.enums import (
-    LeadSource, ProjectType, BudgetRange, DecisionAuthority, TimelineUrgency,
-)
-from app.domain.scoring.scorer import RuleBasedScorer
-from app.domain.scoring.thresholds import HIGH_THRESHOLD, compute_threshold
-from app.domain.conversation.session import ConversationSession, SessionStage
-from app.infrastructure.redis.session_repo import SessionRepository
-from app.infrastructure.redis.score_repo import ScoreRepository
-from app.infrastructure.crm.webhook_client import send_to_crm
-from app.infrastructure.crm.rest_client import fetch_company_ai_config
-from app.infrastructure.llm import local_llm_client
-from app.application.crm_sync import (
-    try_create_or_upsert_crm_lead,
-    try_update_ai_metadata,
-)
+import structlog
+
 from app.application.lead_intake.commands import ProcessWebhookLeadCommand
-from app.metrics import (
-    LEADS_RECEIVED, LEADS_FAST_PATH, LEADS_CHAT_PATH,
-    LEAD_SCORE_HISTOGRAM, CRM_SEND_COUNTER,
-)
+from app.infrastructure.redis.score_repo import ScoreRepository
+from app.infrastructure.redis.session_repo import SessionRepository
+from app.metrics import LEADS_RECEIVED
 
 log = structlog.get_logger(__name__)
 
-_scorer = RuleBasedScorer()
-
-
-def _safe(enum_cls, value, default):
-    try:
-        return enum_cls(value)
-    except (ValueError, KeyError):
-        return default
-
-
-def _build_lead(data: dict[str, Any]) -> Lead:
-    extra = data.get("extra_data", {})
-
-    def get(key: str, default: Any = "") -> Any:
-        return data.get(key) or extra.get(key) or default
-
-    contact = ContactInfo(
-        name=get("name"),
-        phone=get("phone"),
-        email=get("email"),
-        city=get("city"),
-    )
-    return Lead(
-        id=get("lead_id") or str(uuid.uuid4()),
-        source=_safe(LeadSource, get("source"), LeadSource.OTHER),
-        contact=contact,
-        project_type=_safe(ProjectType, get("project_type"), ProjectType.OTHER),
-        budget_range=_safe(BudgetRange, get("budget_range"), BudgetRange.UNKNOWN),
-        decision_authority=_safe(DecisionAuthority, get("decision_authority"), DecisionAuthority.UNKNOWN),
-        timeline_urgency=_safe(TimelineUrgency, get("timeline_urgency"), TimelineUrgency.UNKNOWN),
-        budget_amount=get("budget_amount", None),
-        notes=get("notes"),
-        raw_payload=data.get("raw_payload", data),
-    )
-
 
 class ProcessWebhookLeadHandler:
+    """Thin intake handler — dedup only.
+
+    Kept as a class (vs. a bare function) so the DI wiring in
+    `app/api/deps.py:get_lead_intake_handler` stays unchanged.
+    """
+
     def __init__(
         self,
         session_repo: SessionRepository,
         score_repo: ScoreRepository,
     ) -> None:
         self._session_repo = session_repo
+        # score_repo kept for DI signature compatibility; no longer used here.
         self._score_repo = score_repo
 
     async def handle(self, cmd: ProcessWebhookLeadCommand) -> dict[str, Any]:
-        data = cmd.lead_data
         LEADS_RECEIVED.inc()
 
-        # ── Idempotency check ────────────────────────────────────────────────
-        # When a forward from CRM carries its own external_lead_id (a unique
-        # CRM row id), the sender-side lead_id is just a payload artifact —
-        # two separate CRM rows can legitimately share the same sender id
-        # (e.g. retries of the same FB lead into different intranet deliveries).
-        # Keying dedup on external_lead_id in that case, or skipping it
-        # entirely when neither is usable, prevents the second row from
-        # being silently left without an AI score.
+        data = cmd.lead_data
         lead_id = data.get("lead_id", "")
+
+        # Dedup key: prefer CRM-supplied external_lead_id (unique CRM row id)
+        # over sender-side lead_id (can collide across CRM intranet forwards).
         dedup_key = cmd.external_lead_id or lead_id
         if dedup_key and await self._session_repo.is_duplicate_lead(dedup_key):
-            log.info("duplicate_lead_ignored", dedup_key=dedup_key, lead_id=lead_id)
+            log.info(
+                "duplicate_lead_ignored",
+                dedup_key=dedup_key,
+                lead_id=lead_id,
+            )
             return {"status": "duplicate", "lead_id": lead_id}
 
-        # ── Build domain entity & score ──────────────────────────────────────
-        lead = _build_lead(data)
-        score = _scorer.compute(lead)
-        breakdown = _scorer.breakdown(lead)
-
-        LEAD_SCORE_HISTOGRAM.observe(score)
-        log.info("lead_scored", lead_id=lead.id, score=score)
-
-        fallback_url: str | None = cmd.fallback_url
-
-        # ── Fetch company AI config ─────────────────────────────────────────
-        company_config = None
-        if cmd.company_id:
-            try:
-                company_config = await fetch_company_ai_config(cmd.company_id)
-            except Exception as exc:
-                log.warning("company_ai_config_fetch_failed_intake", error=str(exc))
-
-        # ── Dynamic threshold based on project type + budget ─────────────────
-        threshold = compute_threshold(
-            project_type=lead.project_type.value,
-            budget_range=lead.budget_range.value,
-            company_config=company_config,
-        )
-
-        # ── CRM write-through: create lead mirror in CRM (idempotent) ───────
-        # When the CRM forwarded an already-existing lead (external_lead_id
-        # set), skip the create and just enrich the existing row via the
-        # ai-metadata PATCH. This prevents duplicate CRM rows when the lead
-        # was born on the CRM side (intranet inbound, manual, etc.).
-        if cmd.external_lead_id:
-            crm_lead_id = cmd.external_lead_id
-            log.info(
-                "crm_writethrough_skipped_external_lead",
-                external_lead_id=crm_lead_id,
-                lead_id=lead.id,
-            )
-        else:
-            crm_lead_id = await try_create_or_upsert_crm_lead(
-                company_id=cmd.company_id,
-                lead=lead,
-                source_override="ai_qualifier",
-            )
-        # Manual mode: operator clicks Start Qualify on each lead. We still
-        # score + write-through to CRM so the row is visible, but we defer
-        # every AI-side action (LLM reasoning, WhatsApp greeting, stage
-        # flip) until the operator triggers /start-qualify. The flag lives
-        # on the company's ai_config JSONB; default false keeps the
-        # auto-qualify behaviour for every existing install.
-        manual_qualify = bool((company_config or {}).get("manual_qualify"))
-
-        if manual_qualify:
-            initial_ai_status = "pending"
-            initial_path = "fast" if score >= threshold else "chat"
-        else:
-            initial_ai_status = "qualified" if score >= threshold else "chatting"
-            initial_path = "fast" if score >= threshold else "chat"
-        await try_update_ai_metadata(
-            crm_lead_id or "",
-            score=score,
-            status=initial_ai_status,
-            score_breakdown=breakdown,
-            path=initial_path,
-            idempotency_key=f"lead-initial-score-{crm_lead_id or lead.id}",
-        )
-
-        if manual_qualify:
-            LEADS_CHAT_PATH.inc()
-            return await self._chat_path(
-                lead, score, breakdown,
-                fallback_url=fallback_url,
-                company_id=cmd.company_id,
-                crm_lead_id=crm_lead_id,
-                defer_auto_start=True,
-            )
-
-        # ── Fast path: score >= threshold ────────────────────────────────────
-        if score >= threshold:
-            LEADS_FAST_PATH.inc()
-            return await self._fast_path(
-                lead, score, breakdown,
-                fallback_url=fallback_url,
-                company_config=company_config,
-                crm_lead_id=crm_lead_id,
-            )
-
-        # ── Chat path: score < threshold → PENDING (AI bekler) ──────────────
-        LEADS_CHAT_PATH.inc()
-        return await self._chat_path(
-            lead, score, breakdown,
-            fallback_url=fallback_url,
-            company_id=cmd.company_id,
-            crm_lead_id=crm_lead_id,
-        )
-
-    async def _fast_path(
-        self,
-        lead: Lead,
-        score: int,
-        breakdown: dict[str, int],
-        fallback_url: str | None = None,
-        company_config: dict[str, Any] | None = None,
-        crm_lead_id: str | None = None,
-    ) -> dict[str, Any]:
-        lead_json = lead.to_dict()
-
-        # Generate reasoning report (with fallback)
-        reasoning_json: dict[str, Any] | None = None
-        try:
-            result = await local_llm_client.generate_reasoning_report(
-                lead_json, score, breakdown,
-                company_config=company_config,
-            )
-            reasoning_json = result.model_dump()
-        except Exception as exc:
-            log.warning("reasoning_report_failed_fast_path", error=str(exc))
-
-        # CRM write-through: final qualification + reasoning (no session for fast path)
-        await try_update_ai_metadata(
-            crm_lead_id or "",
-            status="qualified",
-            reasoning=reasoning_json,
-            idempotency_key=f"lead-fast-handoff-{crm_lead_id or lead.id}",
-        )
-
-        handoff = {
-            "raw_payload": lead.raw_payload,
-            "lead": lead_json,
-            "pre_score": score,
-            "qualified_score": score,  # fast path: pre = qualified (skipped chat)
-            "score": score,  # backward compat
-            "reasoning_report": reasoning_json,
-            "champ": None,
-            "session_id": None,
-            "path": "fast",
-            "crm_lead_id": crm_lead_id,
-        }
-
-        success = await send_to_crm(handoff, self._session_repo, fallback_url=fallback_url)
-        CRM_SEND_COUNTER.labels(path="fast", success=str(success)).inc()
-
-        log.info("fast_path_complete", lead_id=lead.id, score=score, crm_sent=success)
-        return {
-            "status": "fast_path",
-            "lead_id": lead.id,
-            "pre_score": score,
-            "qualified_score": score,
-            "score": score,  # backward compat
-            "crm_sent": success,
-            "crm_lead_id": crm_lead_id,
-        }
-
-    async def _chat_path(
-        self,
-        lead: Lead,
-        score: int,
-        breakdown: dict[str, int],
-        fallback_url: str | None = None,
-        company_id: str = "",
-        crm_lead_id: str | None = None,
-        defer_auto_start: bool = False,
-    ) -> dict[str, Any]:
-        session_id = str(uuid.uuid4())
-        lead_dict = lead.to_dict()
-        lead_dict["initial_fit_score"] = score  # preserve pre_score for handoff
-        # Form-sourced chat leads with a phone number kick off proactive
-        # WhatsApp outreach when the company has Green API connected. This
-        # makes the "AI Lead Qualifier channels" promise real — the user
-        #receives the opening message on WhatsApp instead of having to
-        #find a browser-side chat UI. If Green API is not configured the
-        #greeting worker silently skips (logs "greeting_no_whatsapp"),
-        #so the form path keeps working end-to-end either way.
-        phone = (lead.contact.phone or "").strip()
-        clean_phone = _normalize_phone(phone)
-        has_whatsapp_channel = bool(company_id and clean_phone)
-
-        # Stage choice:
-        #   * defer_auto_start (manual mode) → always PENDING, operator flips.
-        #   * WhatsApp outreach queued → CHAT immediately (the greeting worker
-        #    will stream an AI opener and send it on WhatsApp).
-        #  * No WhatsApp channel → PENDING; the session still exists for
-        #    internal browser / API-based chat flows.
-        if defer_auto_start:
-            initial_stage = SessionStage.PENDING
-        else:
-            initial_stage = SessionStage.CHAT if has_whatsapp_channel else SessionStage.PENDING
-
-        session = ConversationSession(
-            session_id=session_id,
-            lead_json=lead_dict,
-            score=score,
-            stage=initial_stage,
-            fallback_url=fallback_url,
-            company_id=company_id,
-            crm_lead_id=crm_lead_id or "",
-        )
-        await self._session_repo.save(session)
-        await self._score_repo.record(session_id, score)
-
-        # CRM write-through: link session id to the CRM lead
-        # (manual mode keeps status=pending until the operator clicks Start)
-        await try_update_ai_metadata(
-            crm_lead_id or "",
-            session_id=session_id,
-            status="pending" if defer_auto_start else "chatting",
-            idempotency_key=f"lead-chat-session-bind-{crm_lead_id or lead.id}",
-        )
-
-        # Enqueue the WhatsApp greeting. The background greeting_worker
-        # picks it up, streams an AI opener, sends it via Green API, and
-        #binds phone→session so the user's reply lands on the same session.
-        greeting_queued = False
-        if has_whatsapp_channel and not defer_auto_start:
-            try:
-                await self._session_repo.push_wa_greeting(
-                    company_id,
-                    {
-                        "session_id": session_id,
-                        "company_id": company_id,
-                        "phone": clean_phone,
-                        "lead_id": lead.id,
-                        "crm_lead_id": crm_lead_id or "",
-                    },
-                )
-                greeting_queued = True
-            except Exception as exc:
-                log.warning(
-                    "chat_path_greeting_queue_failed",
-                    session_id=session_id,
-                    error=str(exc),
-                )
-
-        log.info(
-            "chat_session_created",
-            lead_id=lead.id,
-            session_id=session_id,
-            score=score,
-            stage=str(initial_stage),
-            whatsapp_greeting_queued=greeting_queued,
-            phone_present=bool(clean_phone),
-        )
-
-        return {
-            "status": "chat_path",
-            "lead_id": lead.id,
-            "session_id": session_id,
-            "pre_score": score,
-            "score": score,  # backward compat
-            "crm_lead_id": crm_lead_id,
-            "whatsapp_greeting_queued": greeting_queued,
-        }
-
-
-def _normalize_phone(phone: str) -> str:
-    """Strip to digits so WhatsApp chatId (NNNN@c.us) builds reliably."""
-    if not phone:
-        return ""
-    return "".join(ch for ch in phone if ch.isdigit())
+        return {"status": "accepted", "lead_id": lead_id}

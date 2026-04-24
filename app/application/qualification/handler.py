@@ -13,7 +13,6 @@ from typing import Any
 
 from app.config import get_settings
 from app.domain.conversation.session import SessionStage
-from app.domain.scoring.scorer import RuleBasedScorer
 from app.domain.scoring.thresholds import compute_threshold
 from app.domain.qualification.cta_router import (
     CTAType,
@@ -43,8 +42,6 @@ from app.application.crm_sync import try_update_ai_metadata
 from app.metrics import CRM_SEND_COUNTER
 
 log = structlog.get_logger(__name__)
-
-_scorer = RuleBasedScorer()
 
 
 class HandoffHandler:

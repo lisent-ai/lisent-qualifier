@@ -501,3 +501,90 @@ class TestPreScoreServiceE2E:
         breakdown = json.loads(row["score_breakdown"])
         assert "pre_score_fallback" in breakdown
         assert breakdown["pre_score_fallback"]["reason"] == "ensemble_all_failed"
+
+
+# ============================================================================
+# Phase 7 — Legacy /webhook/lead/{token} thin intake
+# ============================================================================
+
+class TestLegacyWebhookPhase7:
+    """Intake handler after Phase 7 rewire: dedup only, no scoring."""
+
+    async def test_handler_dedup_accepts_new_lead(self, redis_client):
+        from app.application.lead_intake.commands import ProcessWebhookLeadCommand
+        from app.application.lead_intake.handler import ProcessWebhookLeadHandler
+        from app.infrastructure.redis.score_repo import ScoreRepository
+        from app.infrastructure.redis.session_repo import SessionRepository
+
+        # Clean slate
+        async for key in redis_client.scan_iter("dedup:*"):
+            await redis_client.delete(key)
+
+        session_repo = SessionRepository(redis_client, ttl=3600)
+        score_repo = ScoreRepository(redis_client)
+        handler = ProcessWebhookLeadHandler(session_repo, score_repo)
+
+        cmd = ProcessWebhookLeadCommand(
+            lead_data={"lead_id": "phase7-dedup-new-1", "name": "X"},
+            fallback_url=None,
+            company_id="test-co",
+            external_lead_id=None,
+        )
+        result = await handler.handle(cmd)
+        assert result == {"status": "accepted", "lead_id": "phase7-dedup-new-1"}
+
+    async def test_handler_dedup_rejects_repeat(self, redis_client):
+        from app.application.lead_intake.commands import ProcessWebhookLeadCommand
+        from app.application.lead_intake.handler import ProcessWebhookLeadHandler
+        from app.infrastructure.redis.score_repo import ScoreRepository
+        from app.infrastructure.redis.session_repo import SessionRepository
+
+        async for key in redis_client.scan_iter("dedup:*"):
+            await redis_client.delete(key)
+
+        handler = ProcessWebhookLeadHandler(
+            SessionRepository(redis_client, ttl=3600),
+            ScoreRepository(redis_client),
+        )
+        cmd = ProcessWebhookLeadCommand(
+            lead_data={"lead_id": "phase7-dedup-repeat-1", "name": "X"},
+            fallback_url=None,
+            company_id="test-co",
+            external_lead_id=None,
+        )
+        first = await handler.handle(cmd)
+        second = await handler.handle(cmd)
+        assert first["status"] == "accepted"
+        assert second["status"] == "duplicate"
+
+    async def test_handler_prefers_external_lead_id_for_dedup(self, redis_client):
+        from app.application.lead_intake.commands import ProcessWebhookLeadCommand
+        from app.application.lead_intake.handler import ProcessWebhookLeadHandler
+        from app.infrastructure.redis.score_repo import ScoreRepository
+        from app.infrastructure.redis.session_repo import SessionRepository
+
+        async for key in redis_client.scan_iter("dedup:*"):
+            await redis_client.delete(key)
+
+        handler = ProcessWebhookLeadHandler(
+            SessionRepository(redis_client, ttl=3600),
+            ScoreRepository(redis_client),
+        )
+        # Same external_lead_id but different sender-side lead_id — should dedup
+        cmd_a = ProcessWebhookLeadCommand(
+            lead_data={"lead_id": "sender-1", "name": "X"},
+            fallback_url=None,
+            company_id="test-co",
+            external_lead_id="crm-row-42",
+        )
+        cmd_b = ProcessWebhookLeadCommand(
+            lead_data={"lead_id": "sender-2", "name": "Y"},
+            fallback_url=None,
+            company_id="test-co",
+            external_lead_id="crm-row-42",  # same CRM row
+        )
+        first = await handler.handle(cmd_a)
+        second = await handler.handle(cmd_b)
+        assert first["status"] == "accepted"
+        assert second["status"] == "duplicate"  # dedup on external_lead_id
+

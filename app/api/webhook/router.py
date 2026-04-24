@@ -1,15 +1,33 @@
+"""Webhook lead intake — Phase 7 thin orchestration.
+
+Flow:
+    1. Body size + JSON parse.
+    2. Token → company_id + fallback_url via CRM REST.
+    3. Field mapping (heuristic + LLM fallback).
+    4. Handler dedup check — duplicate early return (Redis SET NX).
+    5. Resolve company_id → tenant_id via LisentCRMTenantAdapter (lazy-provisions
+       a tenant row if this is the first time we see this company).
+    6. Build Lead entity → CRM lead mirror (REST, idempotent).
+    7. INSERT qualifier_leads with score=0, status='new', path=NULL.
+    8. enqueue_lead → PreScoreWorker picks up, runs ensemble async.
+    9. Return 202 + {status, lead_id}. Score updates via GET /v1/leads/{id}/score
+       or outbound webhook (pre_score.judged).
+"""
+from __future__ import annotations
+
+import json
 import uuid
 
+import structlog
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
-from app.api.deps import get_lead_intake_handler, SessionRepoDep, ScoreRepoDep
+from app.api.deps import ScoreRepoDep, SessionRepoDep, get_lead_intake_handler
 from app.application.lead_intake.commands import ProcessWebhookLeadCommand
 from app.infrastructure.crm.rest_client import lookup_company_by_qualifier_token
-from app.infrastructure.db.pool import get_db_pool
 from app.infrastructure.db.lead_repo import upsert_lead
+from app.infrastructure.db.pool import get_db_pool
 from app.infrastructure.llm.field_mapper import map_fields
-import structlog
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/webhook", tags=["webhook"])
@@ -24,21 +42,21 @@ async def receive_lead(
     session_repo: SessionRepoDep,
     score_repo: ScoreRepoDep,
 ) -> dict:
-    # ── Body size check + JSON parse ────────────────────────────────────────
+    # ── 1. Body size + JSON parse ───────────────────────────────────────────
     body = await request.body()
     if len(body) > _MAX_BODY_SIZE:
         return JSONResponse({"error": "payload too large"}, status_code=413)
 
-    import json as _json
     try:
-        raw_payload: dict = _json.loads(body)
+        raw_payload: dict = json.loads(body)
     except (ValueError, TypeError):
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
-
     if not isinstance(raw_payload, dict):
-        return JSONResponse({"error": "payload must be a JSON object"}, status_code=400)
+        return JSONResponse(
+            {"error": "payload must be a JSON object"}, status_code=400,
+        )
 
-    # ── Token → company_id + fallback_url ─────────────���─────────────────────
+    # ── 2. Token → company_id + fallback_url ────────────────────────────────
     company_info = await lookup_company_by_qualifier_token(company_token)
     if not company_info:
         log.warning("qualifier_token_invalid", token=company_token[-8:])
@@ -47,13 +65,10 @@ async def receive_lead(
     company_id = str(company_info["company_id"])
     fallback_url: str | None = company_info.get("fallback_url")
 
-    # ── Field mapping (heuristic + LLM fallback) ───────────────────────────
+    # ── 3. Field mapping (heuristic + LLM fallback) ─────────────────────────
     mapping = await map_fields(raw_payload)
 
-    # ── lead_id: external_id > payload lead_id > auto UUID ──────────────────
     lead_id = mapping.external_id or raw_payload.get("lead_id") or str(uuid.uuid4())
-
-    # ── Build lead_data for handler ─────────��─────────────────────���─────────
     lead_data = {
         "name": mapping.full_name,
         "phone": mapping.phone,
@@ -71,15 +86,13 @@ async def receive_lead(
         "raw_payload": raw_payload,
     }
 
-    # ── AI akışını çalıştır ─────────────────────────────────────────────────
-    # external_lead_id is set when the CRM forwards a lead it already
-    # created (intranet inbound, manual create, etc.) — the handler
-    # short-circuits the CRM-create step and only PATCHes ai-metadata
-    # on the pre-existing row, so no duplicate CRM lead is produced.
-    external_lead_id = raw_payload.get("external_lead_id") if isinstance(raw_payload, dict) else None
+    external_lead_id = (
+        raw_payload.get("external_lead_id") if isinstance(raw_payload, dict) else None
+    )
     if external_lead_id is not None:
         external_lead_id = str(external_lead_id).strip() or None
 
+    # ── 4. Handler dedup check ──────────────────────────────────────────────
     handler = get_lead_intake_handler(session_repo, score_repo)
     cmd = ProcessWebhookLeadCommand(
         lead_data=lead_data,
@@ -89,87 +102,134 @@ async def receive_lead(
     )
     result = await handler.handle(cmd)
 
-
-
-    # ── PostgreSQL'e kaydet ────────────────────────────────────────────────
-    result_status = result.get("status", "chat_path")
-
-    # Duplicate from Redis idempotency — skip DB write entirely,
-    # the lead already exists from the first webhook call.
-    if result_status == "duplicate":
+    if result.get("status") == "duplicate":
         log.info("duplicate_skip_db", lead_id=lead_id)
         return result
 
-    path = result_status.replace("_path", "")
-    # Fast path → lead direkt qualified, chat path → new (AI bekliyor)
-    lead_status = "qualified" if result_status == "fast_path" else "new"
+    # ── 5. Resolve company_id → tenant_id ───────────────────────────────────
+    from app.interfaces.rest_public.di import get_tenant_adapter
+    from app.ports.tenant import TenantSourceType
 
+    tenant_adapter = await get_tenant_adapter()
+    tenant = await tenant_adapter.resolve_by_source_ref(
+        source_type=TenantSourceType.LISENT_CRM,
+        source_ref=company_id,
+    )
+    if tenant is None:
+        log.error(
+            "webhook_tenant_resolve_failed",
+            company_id=company_id,
+            lead_id=lead_id,
+        )
+        return JSONResponse(
+            {"error": "tenant mapping missing for company"}, status_code=500,
+        )
+    tenant_id = tenant.id
+
+    # ── 6. CRM lead mirror (synchronous, idempotent; if writethrough off → None)
+    from app.application.crm_sync import try_create_or_upsert_crm_lead
+    from app.application.lead_intake.lead_builder import build_lead
+
+    lead_entity = build_lead(lead_data)
+    crm_lead_id: str | None
+    if external_lead_id:
+        # CRM forwarded an already-existing lead — reuse its id, skip POST.
+        crm_lead_id = external_lead_id
+    else:
+        try:
+            crm_lead_id = await try_create_or_upsert_crm_lead(
+                company_id=company_id,
+                lead=lead_entity,
+                source_override="ai_qualifier",
+            )
+        except Exception as exc:
+            log.warning(
+                "crm_writethrough_create_failed_soft",
+                company_id=company_id,
+                lead_id=lead_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            crm_lead_id = None
+
+    # ── 7. INSERT qualifier_leads (score=0, status=new) ─────────────────────
+    # extra_data carries crm_lead_id so the worker can PATCH ai-metadata
+    # back to the CRM after ensemble finishes.
+    extra_data = dict(mapping.extra_fields or {})
+    if crm_lead_id:
+        extra_data["crm_lead_id"] = crm_lead_id
+    if fallback_url:
+        extra_data["fallback_url"] = fallback_url
+    if mapping.notes:
+        extra_data.setdefault("notes", mapping.notes)
+
+    pool = get_db_pool()
     try:
-        pool = get_db_pool()
         db_id = await upsert_lead(
             pool,
             company_id=company_id,
             lead_id=lead_id,
-            phone=mapping.phone,
-            name=mapping.full_name,
-            email=mapping.email,
-            city=mapping.city,
-            source=mapping.source,
-            project_type=mapping.project_type,
-            budget_range=mapping.budget_range,
-            score=result.get("score", 0),
-            path=path,
-            extra_data=mapping.extra_fields,
-            score_breakdown=result.get("score_breakdown"),
+            phone=mapping.phone or "",
+            name=mapping.full_name or "",
+            email=mapping.email or "",
+            city=mapping.city or "",
+            source=mapping.source or "",
+            project_type=mapping.project_type or "",
+            budget_range=mapping.budget_range or "",
+            score=0,
+            path="",  # PreScoreWorker sets path via pre_score.judged event payload
+            extra_data=extra_data,
+            score_breakdown=None,
             raw_payload=raw_payload,
         )
-
-        # Fast path → status direkt qualified olarak güncelle
-        if lead_status == "qualified" and db_id:
-            await pool.execute(
-                "UPDATE qualifier_leads SET status='qualified', updated_at=now() WHERE id=$1::uuid",
-                db_id,
-            )
-
-        # Chat path ise qualifier_sessions tablosuna da yaz
-        session_id = result.get("session_id")
-        if session_id and db_id:
-            await _upsert_session(pool, db_id, company_id, session_id, result.get("score", 0))
-
     except Exception as exc:
         log.error("qualifier_db_write_failed", error=str(exc), lead_id=lead_id)
+        return JSONResponse({"error": "db write failed"}, status_code=500)
 
-    return result
-
-
-# Faz 6 removed the legacy POST /webhook/rag/{token} that shipped payloads
-# into the CRM as opaque blobs. The new ingestion pipeline at
-# app/api/rag/router.py chunks + indexes content locally for retrieval,
-# with proper idempotency + rate limit + per-doc lifecycle.
-
-async def _upsert_session(
-    pool, lead_db_id: str, company_id: str, session_id: str, score: int,
-) -> None:
-    """Chat path lead'inin session'ını qualifier_sessions tablosuna yaz.
-
-    Aynı lead_id için zaten session varsa yeni oluşturmaz (duplicate webhook koruması).
-    """
+    # Ensure qualifier_leads row is tenant-scoped (multi-tenant RLS prep).
+    # upsert_lead uses company_id; we enforce tenant_id in the same transaction.
     try:
-        existing = await pool.fetchval(
-            "SELECT id FROM qualifier_sessions WHERE lead_id = $1::uuid LIMIT 1",
-            lead_db_id,
-        )
-        if existing:
-            log.debug("session_already_exists", lead_db_id=lead_db_id, existing_session=str(existing))
-            return
-
         await pool.execute(
-            """
-            INSERT INTO qualifier_sessions (id, lead_id, company_id, score, stage, messages)
-            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'PENDING', '[]'::jsonb)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            session_id, lead_db_id, company_id, score,
+            "UPDATE qualifier_leads SET tenant_id = $1::uuid WHERE id = $2::uuid",
+            str(tenant_id), db_id,
         )
     except Exception as exc:
-        log.warning("session_db_write_failed", error=str(exc), session_id=session_id)
+        log.warning(
+            "qualifier_tenant_id_update_failed",
+            lead_id=lead_id,
+            db_id=db_id,
+            error=str(exc),
+        )
+
+    # ── 8. Enqueue prescore job (worker picks up, async ensemble) ──────────
+    try:
+        from app.application.prescore.queue import enqueue_lead
+        from app.infrastructure.redis.client import get_redis
+
+        await enqueue_lead(
+            get_redis(),
+            tenant_id=tenant_id,
+            lead_id=uuid.UUID(db_id),
+        )
+    except Exception as exc:
+        log.warning(
+            "prescore_enqueue_failed",
+            tenant_id=str(tenant_id),
+            lead_id=lead_id,
+            db_id=db_id,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+    log.info(
+        "webhook_lead_accepted",
+        lead_id=lead_id,
+        db_id=db_id,
+        tenant_id=str(tenant_id),
+        crm_lead_id=crm_lead_id,
+    )
+
+    return {
+        "status": "accepted",
+        "lead_id": lead_id,
+        "db_id": db_id,
+        "crm_lead_id": crm_lead_id,
+    }
