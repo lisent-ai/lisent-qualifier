@@ -1,6 +1,7 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-pydantic>=2.10.0
+pydantic[email]>=2.10.0
+email-validator>=2.2.0
 httpx>=0.28.0
 # Maintained successor to Holehe (SP 2025+). Provides engine.check_all()
 # which iterates 95+ email modules in parallel with built-in proxy
