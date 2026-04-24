@@ -222,7 +222,7 @@ def _aggregate_signals(
             [r.identity.osint_digital_footprint for r in results],
             disagreements, "identity.osint_digital_footprint",
         ),
-        evidence=_union_strings([r.identity.evidence for r in results], max_items=8),
+        evidence=_union_strings([r.identity.evidence for r in results], max_items=6),
     )
 
     intent = IntentSignals(
@@ -247,7 +247,7 @@ def _aggregate_signals(
             disagreements, "intent.buying_stage",
         ),
         urgency_cues=_union_strings([r.intent.urgency_cues for r in results], max_items=4),
-        evidence=_union_strings([r.intent.evidence for r in results], max_items=8),
+        evidence=_union_strings([r.intent.evidence for r in results], max_items=6),
     )
 
     # segment_label: highest-confidence persona'nın etiketi (narratif alan)
@@ -269,7 +269,7 @@ def _aggregate_signals(
             [r.fit.company_size_fit for r in results], disagreements, "fit.company_size_fit",
         ),
         segment_label=_best_segment,
-        evidence=_union_strings([r.fit.evidence for r in results], max_items=8),
+        evidence=_union_strings([r.fit.evidence for r in results], max_items=6),
     )
 
     risk = RiskSignals(
@@ -286,7 +286,7 @@ def _aggregate_signals(
         competitor_mentioned=_majority_vote_bool(
             [r.risk.competitor_mentioned for r in results],
         ),
-        evidence=_union_strings([r.risk.evidence for r in results], max_items=6),
+        evidence=_union_strings([r.risk.evidence for r in results], max_items=5),
     )
 
     sales_context = _pick_best_sales_context(personas)
