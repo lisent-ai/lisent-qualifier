@@ -58,6 +58,27 @@ services:
       retries: 5
       start_period: 20s
 
+  # Phase 9.3.B — maintained Holehe successor. 95+ email modules with
+  # built-in proxy rotation hooks; actively updated for 2026 site flows.
+  # Internal DNS: user-scanner-api:8000 (dokploy-network).
+  user-scanner-api:
+    build:
+      context: ./user-scanner-api
+    image: lisent/user-scanner-api:prod
+    container_name: lisent-osint-user-scanner-api
+    restart: unless-stopped
+    networks:
+      - osint-net
+      - dokploy-network
+    environment:
+      - USER_SCANNER_TIMEOUT_S=${USER_SCANNER_TIMEOUT_S:-30.0}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 networks:
   osint-net:
     name: lisent-osint-net

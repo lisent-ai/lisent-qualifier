@@ -42,7 +42,7 @@ class OSINTPhoneSignals:
 
 @dataclass(frozen=True)
 class OSINTEmailSignals:
-    """Email OSINT sinyalleri (holehe-api)."""
+    """Email OSINT sinyalleri (user-scanner / holehe + domain intel)."""
 
     domain: str | None = None               # "onurinsaat.com.tr"
     domain_type: str | None = None          # "corporate" | "freemail" | "disposable" | "unknown"
@@ -52,6 +52,25 @@ class OSINTEmailSignals:
     error_count: int = 0                    # kaç modül hata dönmüş
     modules_checked: int = 0                # toplam test edilen modül
     any_rate_limited: bool = False
+
+    # Phase 9.3.C — domain intelligence layer (free, self-hosted).
+    # DNS
+    mx_valid: bool | None = None
+    mx_host: str | None = None
+    # WHOIS
+    domain_registrar: str | None = None
+    domain_age_days: int | None = None
+    whois_org: str | None = None
+    # Certificate Transparency (crt.sh)
+    ssl_cert_org: str | None = None
+    ssl_cert_count: int | None = None
+    # Groq gpt-oss-120b + browser_search (web-grounded)
+    organization_name: str | None = None
+    organization_industry: str | None = None
+    organization_size: str | None = None
+    organization_country: str | None = None
+    is_legitimate_business: bool | None = None
+    enrichment_confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +114,20 @@ class OSINTProfile:
                 "error_count": self.email.error_count,
                 "modules_checked": self.email.modules_checked,
                 "any_rate_limited": self.email.any_rate_limited,
+                # Phase 9.3.C domain intel fields (all optional)
+                "mx_valid": self.email.mx_valid,
+                "mx_host": self.email.mx_host,
+                "domain_registrar": self.email.domain_registrar,
+                "domain_age_days": self.email.domain_age_days,
+                "whois_org": self.email.whois_org,
+                "ssl_cert_org": self.email.ssl_cert_org,
+                "ssl_cert_count": self.email.ssl_cert_count,
+                "organization_name": self.email.organization_name,
+                "organization_industry": self.email.organization_industry,
+                "organization_size": self.email.organization_size,
+                "organization_country": self.email.organization_country,
+                "is_legitimate_business": self.email.is_legitimate_business,
+                "enrichment_confidence": self.email.enrichment_confidence,
             },
             "notes": list(self.notes),
         }
@@ -133,6 +166,19 @@ class OSINTProfile:
                 error_count=int(email.get("error_count") or 0),
                 modules_checked=int(email.get("modules_checked") or 0),
                 any_rate_limited=bool(email.get("any_rate_limited", False)),
+                mx_valid=email.get("mx_valid"),
+                mx_host=email.get("mx_host"),
+                domain_registrar=email.get("domain_registrar"),
+                domain_age_days=email.get("domain_age_days"),
+                whois_org=email.get("whois_org"),
+                ssl_cert_org=email.get("ssl_cert_org"),
+                ssl_cert_count=email.get("ssl_cert_count"),
+                organization_name=email.get("organization_name"),
+                organization_industry=email.get("organization_industry"),
+                organization_size=email.get("organization_size"),
+                organization_country=email.get("organization_country"),
+                is_legitimate_business=email.get("is_legitimate_business"),
+                enrichment_confidence=email.get("enrichment_confidence"),
             ),
             notes=list(data.get("notes") or []),
         )

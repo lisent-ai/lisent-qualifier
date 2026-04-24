@@ -165,6 +165,8 @@ async def get_osint_adapter() -> OSINTPort:
     upstream = SelfHostedOSINTAdapter(
         phoneinfoga_url=settings.osint_phoneinfoga_url,
         holehe_url=settings.osint_holehe_url,
+        user_scanner_url=settings.osint_user_scanner_url,
+        email_scanner=settings.osint_email_scanner,
         request_timeout_s=settings.osint_request_timeout_s,
         holehe_timeout_per_module=settings.osint_holehe_timeout_per_module,
     )

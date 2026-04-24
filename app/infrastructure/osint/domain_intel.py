@@ -1,0 +1,349 @@
+"""Domain intelligence pipeline — free, self-hosted, four-layer enrichment.
+
+Given an email domain, produce a dict of signals the pre-score ensemble
+can use to justify a corporate/B2B classification. All four layers run in
+parallel where safe; the pipeline degrades gracefully when any layer
+fails (returns partial signals rather than throwing).
+
+Layers:
+    1. DNS/MX  — is the domain deliverable? (dnspython, offline except for DNS)
+    2. Classification — freemail / disposable / corporate bucket
+    3. WHOIS + Certificate Transparency — domain age + registered org +
+       SSL-cert Subject "O=Company Name"
+    4. Groq `openai/gpt-oss-120b` with native `tools=[browser_search]` —
+       web-grounded lookup returning JSON {company_name, industry, size,
+       country, confidence}. Only fires for non-freemail/non-disposable
+       domains to keep cost proportional to lead value.
+
+Output is merged into `OSINTEmailSignals` optional fields so the existing
+60-day DB cache persists everything automatically — no migration needed.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from typing import Any
+
+import httpx
+import structlog
+
+from app.infrastructure.osint.disposable_list import (
+    disposable_list_size,
+    is_disposable,
+    is_freemail,
+)
+
+log = structlog.get_logger(__name__)
+
+
+_CRT_SH_TIMEOUT = 4.0
+_WHOIS_TIMEOUT = 5.0
+_DNS_TIMEOUT = 2.0
+_LLM_TIMEOUT = 25.0
+
+_ORG_RDN_RE = re.compile(r"(?:\bO=)([^,+/]+)", re.IGNORECASE)
+_COMPOUND_TLD_RE = re.compile(r"\.(com|org|net|edu|gov)\.(\w{2})$")
+
+
+def classify_domain(domain: str) -> str:
+    """Return a coarse bucket for the domain before any network lookup.
+
+    Values:
+        "missing"            — blank / invalid
+        "disposable"         — in the curated blocklist
+        "freemail"           — gmail/hotmail/yandex/etc.
+        "corporate_verified" — .gov.tr / .edu.tr (registry-verified)
+        "corporate_suspected" — .com.tr / any non-freemail TLD with MX
+        "unknown"            — domain looks valid but no stronger signal
+    """
+    if not domain:
+        return "missing"
+    d = domain.lower().strip()
+    if is_disposable(d):
+        return "disposable"
+    if is_freemail(d):
+        return "freemail"
+    if d.endswith(".gov.tr") or d.endswith(".edu.tr") or d.endswith(".gov") or d.endswith(".edu"):
+        return "corporate_verified"
+    # .com.tr / .org.tr / .net.tr are TR commercial; general TLD also
+    # defaults to suspected-corporate when it has an MX record (caller
+    # will upgrade after MX check).
+    return "corporate_suspected"
+
+
+async def mx_check(domain: str) -> dict[str, Any]:
+    """Return {mx_valid, mx_host} using dnspython."""
+    try:
+        import dns.resolver  # type: ignore[import-untyped]
+    except ImportError:
+        return {}
+    try:
+        loop = asyncio.get_running_loop()
+        records = await loop.run_in_executor(
+            None,
+            lambda: list(dns.resolver.resolve(domain, "MX", lifetime=_DNS_TIMEOUT)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("mx_check_failed", domain=domain, error=str(exc))
+        return {"mx_valid": False}
+    if not records:
+        return {"mx_valid": False}
+    # Prefer the lowest-preference MX host
+    records.sort(key=lambda r: getattr(r, "preference", 0))
+    return {
+        "mx_valid": True,
+        "mx_host": str(records[0].exchange).rstrip("."),
+    }
+
+
+async def whois_lookup(domain: str) -> dict[str, Any]:
+    """Return {registrar, domain_age_days, whois_org} — best-effort."""
+    try:
+        import whois  # type: ignore[import-untyped]
+    except ImportError:
+        return {}
+    try:
+        loop = asyncio.get_running_loop()
+        w = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: whois.whois(domain)),
+            timeout=_WHOIS_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("whois_lookup_failed", domain=domain, error=str(exc))
+        return {}
+
+    def _first(v: Any) -> Any:
+        if isinstance(v, list) and v:
+            return v[0]
+        return v
+
+    out: dict[str, Any] = {}
+    registrar = _first(getattr(w, "registrar", None))
+    if registrar:
+        out["domain_registrar"] = str(registrar)
+
+    created = _first(getattr(w, "creation_date", None))
+    if created is not None:
+        try:
+            from datetime import datetime, timezone
+            age_days = (datetime.now(timezone.utc) - created).days if hasattr(created, "year") else None
+            if age_days and age_days > 0:
+                out["domain_age_days"] = int(age_days)
+        except Exception:
+            pass
+
+    org = _first(getattr(w, "org", None))
+    if org:
+        out["whois_org"] = str(org)
+
+    return out
+
+
+async def crt_sh_lookup(domain: str, client: httpx.AsyncClient) -> dict[str, Any]:
+    """Query crt.sh Certificate Transparency and extract Subject "O=" org.
+
+    The issuer_name on a corporate-issued SSL cert frequently contains
+    the legal entity name — this alone is often enough to hint the LLM
+    layer toward the right company without a web search.
+    """
+    url = f"https://crt.sh/?output=json&Identity={domain}"
+    try:
+        resp = await client.get(url, timeout=_CRT_SH_TIMEOUT)
+    except (httpx.TimeoutException, httpx.HTTPError) as exc:
+        log.debug("crt_sh_failed", domain=domain, error=str(exc))
+        return {}
+    if resp.status_code != 200:
+        return {}
+    try:
+        certs = resp.json()
+    except ValueError:
+        return {}
+    if not isinstance(certs, list) or not certs:
+        return {"ssl_cert_count": 0}
+
+    # Scan up to 10 most recent certs for a plausible org name.
+    for cert in certs[:10]:
+        subject = cert.get("issuer_name") or cert.get("name_value") or ""
+        match = _ORG_RDN_RE.search(str(subject))
+        if not match:
+            continue
+        org = match.group(1).strip().strip('"')
+        # Filter out Let's Encrypt / Cloudflare / standard CAs
+        if any(needle in org.lower() for needle in (
+            "let's encrypt", "sectigo", "digicert", "cloudflare", "google trust",
+            "amazon", "zerossl",
+        )):
+            continue
+        return {"ssl_cert_org": org, "ssl_cert_count": len(certs)}
+
+    return {"ssl_cert_count": len(certs)}
+
+
+_DOMAIN_INTEL_SYSTEM = (
+    "Sen bir B2B inşaat satış ekibinin araştırmacısısın. Görevin: verilen "
+    "email domain'inin hangi şirkete ait olduğunu web araması yaparak "
+    "belirlemek ve JSON döndürmek. Türkçe şirketler için Ticaret Sicili veya "
+    "LinkedIn öncelikli. Sadece JSON döndür, başka metin ekleme."
+)
+
+_DOMAIN_INTEL_USER = (
+    "Domain: {domain}\n"
+    "İpuçları (DNS/WHOIS/SSL cert'ten):\n{hints}\n\n"
+    "JSON şema:\n"
+    "{{\n"
+    '  "company_name": "bulabilirsen; aksi halde null",\n'
+    '  "industry": "construction | real_estate | retail | finance | '
+    'technology | manufacturing | services | other",\n'
+    '  "size_estimate": "small | medium | large | enterprise | unknown",\n'
+    '  "country": "ISO-2 kod (TR, DE, GB, AE, ...)",\n'
+    '  "is_legitimate_business": true,\n'
+    '  "confidence": 0.0,\n'
+    '  "source_urls": ["<url1>", "<url2>"]\n'
+    "}}\n\n"
+    "Eğer domain bilinen bir consumer hizmeti (freemail, disposable, "
+    "test-domain) ise company_name=null ve is_legitimate_business=false "
+    "yaz. Hiç web sonucu bulamazsan confidence=0.0 döndür."
+)
+
+
+async def enrich_domain_via_llm(
+    domain: str,
+    hints: dict[str, Any],
+    *,
+    llm_client: Any,  # groq.AsyncGroq
+    model: str,
+) -> dict[str, Any]:
+    """Call Groq gpt-oss-120b with native browser_search for domain → company.
+
+    This is the Hunter.io replacement. Same model we use for scoring so
+    config stays single-key. Groq server-side runs web searches and
+    returns a JSON synthesis. `reasoning_effort="low"` keeps token cost
+    and latency down.
+    """
+    messages = [
+        {"role": "system", "content": _DOMAIN_INTEL_SYSTEM},
+        {
+            "role": "user",
+            "content": _DOMAIN_INTEL_USER.format(
+                domain=domain,
+                hints=json.dumps(hints, ensure_ascii=False),
+            ),
+        },
+    ]
+    try:
+        resp = await asyncio.wait_for(
+            llm_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=[{"type": "browser_search"}],
+                response_format={"type": "json_object"},
+                reasoning_effort="low",
+                max_tokens=1024,
+            ),
+            timeout=_LLM_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        log.warning("domain_intel_llm_timeout", domain=domain)
+        return {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "domain_intel_llm_failed",
+            domain=domain,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return {}
+
+    content = (resp.choices[0].message.content or "").strip()
+    if not content:
+        return {}
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        log.warning("domain_intel_llm_bad_json", domain=domain, error=str(exc))
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # Only surface the fields we actually consume downstream.
+    return {
+        "organization_name": data.get("company_name") or None,
+        "organization_industry": data.get("industry") or None,
+        "organization_size": data.get("size_estimate") or None,
+        "organization_country": data.get("country") or None,
+        "is_legitimate_business": bool(data.get("is_legitimate_business"))
+        if data.get("is_legitimate_business") is not None else None,
+        "enrichment_confidence": (
+            float(data["confidence"]) if isinstance(data.get("confidence"), (int, float)) else None
+        ),
+    }
+
+
+async def enrich_domain(
+    domain: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    llm_client: Any = None,
+    llm_model: str | None = None,
+    use_llm: bool = True,
+) -> dict[str, Any]:
+    """Four-layer pipeline. Returns a flat dict of enrichment signals.
+
+    The LLM layer is flag-gated AND category-gated — only fires on
+    suspected-corporate domains with a valid MX record, to keep the
+    browser_search tool cost scaling with lead value.
+    """
+    if not domain:
+        return {"domain_class": "missing"}
+    domain = domain.lower().strip()
+
+    # Layer 2 first — very cheap, short-circuits disposable / freemail.
+    coarse = classify_domain(domain)
+    if coarse in ("disposable", "freemail", "missing"):
+        return {"domain_class": coarse}
+
+    # Owned-client fallback so callers can pass None.
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(
+            timeout=5.0, headers={"User-Agent": "lisent-qualifier/osint"},
+        )
+
+    try:
+        dns_out, whois_out, ct_out = await asyncio.gather(
+            mx_check(domain),
+            whois_lookup(domain),
+            crt_sh_lookup(domain, client),
+            return_exceptions=False,
+        )
+        hints: dict[str, Any] = {**(dns_out or {}), **(whois_out or {}), **(ct_out or {})}
+        domain_class = coarse
+        if hints.get("mx_valid") and coarse == "corporate_suspected":
+            # MX present strengthens the class but we stay at "suspected"
+            # unless the LLM flip it to verified.
+            pass
+        elif hints.get("mx_valid") is False and coarse != "corporate_verified":
+            domain_class = "unknown"
+
+        result: dict[str, Any] = {"domain_class": domain_class, **hints}
+
+        if use_llm and llm_client is not None and llm_model and domain_class in (
+            "corporate_verified", "corporate_suspected",
+        ):
+            llm_out = await enrich_domain_via_llm(
+                domain, hints,
+                llm_client=llm_client, model=llm_model,
+            )
+            result.update({k: v for k, v in llm_out.items() if v is not None})
+
+        return result
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
+def health_snapshot() -> dict[str, Any]:
+    """For /health endpoint or startup log — confirms blocklist loaded."""
+    return {
+        "disposable_list_size": disposable_list_size(),
+        "freemail_list_size": 0,  # FREEMAIL_DOMAINS is a set; avoid import cycle
+    }

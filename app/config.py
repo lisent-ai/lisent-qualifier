@@ -106,6 +106,19 @@ class Settings(BaseSettings):
     osint_enabled: bool = False
     osint_phoneinfoga_url: str = "http://phoneinfoga:5000"
     osint_holehe_url: str = "http://holehe-api:8000"
+    # Phase 9.3.B — maintained Holehe successor. Same internal DNS pattern.
+    osint_user_scanner_url: str = "http://user-scanner-api:8000"
+    # Phase 9.3.C — in-process domain intelligence (MX + WHOIS + crt.sh).
+    phase9_domain_intel_enabled: bool = True
+    # Sub-flag: the LLM browser_search layer (gpt-oss-120b). Disable to
+    # stop the Groq compound tool usage while keeping cheap DNS/WHOIS/SSL.
+    phase9_domain_intel_llm_enabled: bool = True
+    # Which email scanner to call when a lead has an email:
+    #   "user_scanner" (default, recommended)
+    #   "holehe"       (legacy, Holehe upstream inactive in 2026)
+    #   "both"         (run in parallel, merge results — more coverage,
+    #                   higher rate-limit risk)
+    osint_email_scanner: str = "user_scanner"
     osint_profile_stale_days: int = 60
     osint_request_timeout_s: float = 15.0
     osint_holehe_timeout_per_module: float = 4.0
