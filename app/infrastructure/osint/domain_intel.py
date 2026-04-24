@@ -113,6 +113,50 @@ def _layer_metric(layer: str, outcome: str) -> None:
         pass
 
 
+def _parse_intel_json(raw: str) -> dict[str, Any] | None:
+    """3-tier JSON extraction from an LLM response that might include
+    prose around the object (the tools+no-json-mode combination can
+    cause gpt-oss-120b to narrate briefly before the JSON block)."""
+    # Tier 1: direct parse
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+    # Tier 2: markdown fenced block
+    fence_start = raw.find("```")
+    if fence_start != -1:
+        body = raw[fence_start + 3:]
+        # strip optional language tag
+        if "\n" in body:
+            body = body.split("\n", 1)[1]
+        fence_end = body.find("```")
+        if fence_end != -1:
+            body = body[:fence_end]
+        try:
+            parsed = json.loads(body.strip())
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+    # Tier 3: first balanced {...} block
+    first_brace = raw.find("{")
+    if first_brace == -1:
+        return None
+    depth = 0
+    for i in range(first_brace, len(raw)):
+        if raw[i] == "{":
+            depth += 1
+        elif raw[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    parsed = json.loads(raw[first_brace:i + 1])
+                    return parsed if isinstance(parsed, dict) else None
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
 async def whois_lookup(domain: str) -> dict[str, Any]:
     """Return {registrar, domain_age_days, whois_org} — best-effort."""
     try:
@@ -268,18 +312,22 @@ async def enrich_domain_via_llm(
         },
     ]
     try:
-        # Note: `reasoning_effort` intentionally NOT passed. Groq's
-        # gpt-oss-120b has a documented bug where low reasoning_effort
-        # causes it to silently ignore tool calls (see community thread
-        # #385). Default (medium) reliably invokes browser_search.
-        # max_tokens 1024 → 2048 to cover the search-result synthesis +
-        # JSON emit without truncation.
+        # IMPORTANT: Groq rejects `response_format=json_object` combined
+        # with `tools=[...]` with a 400 "json mode cannot be combined
+        # with tool/function calling". Since we need tool calls for the
+        # web search we drop json mode and rely on the prompt's explicit
+        # "return ONLY JSON" instruction. _parse_judgment-style fallbacks
+        # (markdown strip, brace-scan) in this function handle any
+        # stray prose the model emits around the JSON body.
+        #
+        # Also: reasoning_effort omitted intentionally. On gpt-oss-120b
+        # low reasoning_effort silently skips tool calls (community
+        # thread #385). Default (medium) reliably invokes browser_search.
         resp = await asyncio.wait_for(
             llm_client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=[{"type": "browser_search"}],
-                response_format={"type": "json_object"},
                 max_tokens=2048,
             ),
             timeout=_LLM_TIMEOUT,
@@ -301,10 +349,13 @@ async def enrich_domain_via_llm(
     if not content:
         _layer_metric("llm_search", "miss")
         return {}
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError as exc:
-        log.warning("domain_intel_llm_bad_json", domain=domain, error=str(exc))
+    data = _parse_intel_json(content)
+    if data is None:
+        log.warning(
+            "domain_intel_llm_bad_json",
+            domain=domain,
+            content_head=content[:200],
+        )
         _layer_metric("llm_search", "error")
         return {}
     if not isinstance(data, dict):
@@ -366,14 +417,13 @@ async def enrich_domain(
             return_exceptions=False,
         )
         hints: dict[str, Any] = {**(dns_out or {}), **(whois_out or {}), **(ct_out or {})}
+        # Keep the coarse classification even when MX is flaky:
+        # dnspython false-negatives are common (DNSSEC hiccups, resolver
+        # timeouts, TR-resolver quirks for .com.tr). A broken MX on a
+        # .com.tr domain is still more likely to be a real (if temporarily
+        # mis-configured) company than a random consumer domain, and the
+        # LLM browser_search layer can still produce useful signal.
         domain_class = coarse
-        if hints.get("mx_valid") and coarse == "corporate_suspected":
-            # MX present strengthens the class but we stay at "suspected"
-            # unless the LLM flip it to verified.
-            pass
-        elif hints.get("mx_valid") is False and coarse != "corporate_verified":
-            domain_class = "unknown"
-
         result: dict[str, Any] = {"domain_class": domain_class, **hints}
 
         if use_llm and llm_client is not None and llm_model and domain_class in (
