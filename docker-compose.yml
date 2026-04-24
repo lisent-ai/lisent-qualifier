@@ -49,6 +49,20 @@ services:
       # Dokploy (no defaults — empty value disables the relevant auth path).
       API_KEY_PEPPER: ${API_KEY_PEPPER}
       PLATFORM_ADMIN_TOKEN: ${PLATFORM_ADMIN_TOKEN}
+
+      # Phase 3 — OSINT-enriched LLM judge pre-scoring pipeline.
+      # All gated OFF by default for safe rollout. Flip in Dokploy Environment
+      # AFTER migration 004 + lisent-osint-stack deployed.
+      PRESCORE_WORKER_ENABLED: ${PRESCORE_WORKER_ENABLED:-false}
+      OSINT_ENABLED: ${OSINT_ENABLED:-false}
+      OSINT_PHONEINFOGA_URL: ${OSINT_PHONEINFOGA_URL:-http://phoneinfoga:5000}
+      OSINT_HOLEHE_URL: ${OSINT_HOLEHE_URL:-http://holehe-api:8000}
+      OSINT_PROFILE_STALE_DAYS: ${OSINT_PROFILE_STALE_DAYS:-60}
+      OSINT_REQUEST_TIMEOUT_S: ${OSINT_REQUEST_TIMEOUT_S:-15.0}
+      OSINT_HOLEHE_TIMEOUT_PER_MODULE: ${OSINT_HOLEHE_TIMEOUT_PER_MODULE:-4.0}
+      PRE_SCORE_JUDGE_MAX_TOKENS: ${PRE_SCORE_JUDGE_MAX_TOKENS:-2048}
+      PRE_SCORE_JUDGE_TIMEOUT: ${PRE_SCORE_JUDGE_TIMEOUT:-12}
+      PRE_SCORE_DIVERGENCE_THRESHOLD: ${PRE_SCORE_DIVERGENCE_THRESHOLD:-20}
     networks:
       - dokploy-network
 
