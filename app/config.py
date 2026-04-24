@@ -70,8 +70,12 @@ class Settings(BaseSettings):
     judge_self_consistency_passes: int = 3
     judge_fallback_to_champ: bool = True
 
-    # Pre-Score Judge (Phase 3 — intake'te çalışan ensemble judge)
-    pre_score_judge_max_tokens: int = 2048
+    # Pre-Score Judge (Phase 3 — intake'te çalışan ensemble judge).
+    # 2048 was enough for llama-3.3-70b; gpt-oss-120b's reasoning pre-roll
+    # burns more of the budget before emitting structured JSON. 4096 gives
+    # headroom for the full PreScoreJudgmentResult schema even when
+    # reasoning_effort occasionally drifts above "low".
+    pre_score_judge_max_tokens: int = 4096
     pre_score_judge_timeout: int = 12
     pre_score_ensemble_personas: list[str] = Field(
         default_factory=lambda: ["skeptic", "neutral", "opportunity"],

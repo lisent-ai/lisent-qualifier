@@ -141,6 +141,18 @@ Sektör: {sector}
 ## Çıktı Formatı
 
 Sadece JSON döndür. Markdown code fence, açıklama, başlık YOK. Şema aşağıda.
+
+## Zorunlu Alanlar (HEPSİ AYNI YANITTA OLMALI)
+
+Yanıtın EKSİKSİZ olmalı. Aşağıdaki alanların **hepsi** çıkışta bulunmalı:
+thinking, identity, intent, fit, risk, sales_context, direct_score,
+extraction_confidence. Eksik alan içeren JSON geçersiz sayılır.
+
+Eğer bir kategori için veri yoksa, o alanın enum'larını "missing" /
+"absent" / "unknown" değerleriyle doldur — ama alanın kendisini atlama.
+Özellikle `sales_context`'i atlamak yaygın bir hata; form boş olsa bile
+`sales_context.who_they_are = "Yeterli sinyal yok — discovery gerekli"`
+gibi değer yaz.
 """
 
 

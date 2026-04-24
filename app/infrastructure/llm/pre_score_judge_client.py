@@ -191,6 +191,17 @@ async def run_pre_score_persona(
     if not await acquire(estimated_tokens=5000, priority="prescore"):
         raise RuntimeError("Groq rate limit — pre-score judge throttled")
 
+    # gpt-oss-120b burns tokens on internal reasoning before emitting the
+    # structured JSON. With reasoning_effort default the 2048-token budget
+    # often overflows before `sales_context` / `intent` / `fit` fields get
+    # written, producing partial JSON that fails Pydantic validation.
+    # Forcing reasoning_effort="low" cuts the CoT pre-roll so the model
+    # spends the budget on the output schema. Only applies to gpt-oss-* /
+    # compound models; llama-3.3 ignores the field silently.
+    extra_kwargs: dict[str, Any] = {}
+    if "gpt-oss" in model or "compound" in model:
+        extra_kwargs["reasoning_effort"] = "low"
+
     start = time.monotonic()
     try:
         response = await client.chat.completions.create(
@@ -200,6 +211,7 @@ async def run_pre_score_persona(
             temperature=temperature,
             stream=False,
             response_format={"type": "json_object"},
+            **extra_kwargs,
         )
         content = response.choices[0].message.content or ""
         result = _parse_judgment(content)
