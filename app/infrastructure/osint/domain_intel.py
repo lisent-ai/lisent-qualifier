@@ -251,40 +251,89 @@ async def crt_sh_lookup(domain: str, client: httpx.AsyncClient) -> dict[str, Any
 
 _DOMAIN_INTEL_SYSTEM = (
     "You are a B2B research agent for a construction sales team. "
-    "**You MUST call the `browser_search` tool at least once before you "
-    "respond.** Do not guess the company from the domain name; search the "
-    "live web. For Turkish domains prioritize Ticaret Sicili Gazetesi and "
-    "LinkedIn results. After searching, synthesize findings into a single "
-    "JSON object — no prose, no markdown, JSON only. Missing fields are "
-    "not acceptable; use null or the appropriate 'unknown' enum value."
+    "Research the given email domain on the live web and identify the "
+    "owning company. For Turkish domains prioritize Ticaret Sicili "
+    "Gazetesi and LinkedIn results.\n\n"
+    "Your workflow:\n"
+    "1. Call `browser_search` at least once with a targeted query about "
+    "   the domain.\n"
+    "2. Read the results.\n"
+    "3. Call `submit_domain_report` exactly once with your structured "
+    "   findings.\n\n"
+    "Do NOT emit a plain text answer. Do NOT use any tool other than "
+    "`browser_search` and `submit_domain_report`. The sales team reads "
+    "the structured report, not free-form prose."
 )
 
 _DOMAIN_INTEL_USER = (
-    "Research this email domain and identify the owning company.\n\n"
+    "Research this email domain and file a structured report.\n\n"
     "Domain: {domain}\n"
-    "Known hints (DNS/WHOIS/SSL — use to steer the search, not to replace "
-    "it):\n{hints}\n\n"
-    "Step 1: Call `browser_search` with a specific query about the "
-    "domain (examples: `\"{domain}\" company`, `\"{domain}\" LinkedIn`, "
-    "`site:{domain}`, or for .com.tr/.edu.tr a Turkish trade-registry "
-    "search).\n"
-    "Step 2: After reading the search results, return exactly this JSON:\n"
-    "{{\n"
-    '  "company_name": "<legal entity name if found, else null>",\n'
-    '  "industry": "construction | real_estate | retail | finance | '
-    'technology | manufacturing | services | other | unknown",\n'
-    '  "size_estimate": "small | medium | large | enterprise | unknown",\n'
-    '  "country": "<ISO-2 code, e.g. TR, DE, GB, AE — or null>",\n'
-    '  "is_legitimate_business": <bool>,\n'
-    '  "confidence": <0.0-1.0>,\n'
-    '  "source_urls": ["<url1>", "<url2>"]\n'
-    "}}\n\n"
-    "If the domain is obviously freemail/disposable/test, you can skip "
-    "deep research — set company_name=null, is_legitimate_business=false, "
-    "confidence=0 — but you must still make one browser_search call to "
-    "verify it is a known consumer provider. No matter what you return, "
-    "the JSON fields above are all required."
+    "Known DNS/WHOIS/SSL hints (steer your search, do not replace it):\n"
+    "{hints}\n\n"
+    "After at least one browser_search, call submit_domain_report with:\n"
+    "  company_name — legal entity name if identifiable, else null\n"
+    "  industry — one of: construction, real_estate, retail, finance, "
+    "technology, manufacturing, services, other, unknown\n"
+    "  size_estimate — small, medium, large, enterprise, or unknown\n"
+    "  country — ISO-2 code (TR, DE, GB, AE, ...) or null\n"
+    "  is_legitimate_business — true/false\n"
+    "  confidence — 0.0-1.0\n"
+    "  source_urls — 1-3 URLs you consulted\n\n"
+    "For freemail/disposable/test domains you may skip search depth but "
+    "still call submit_domain_report with company_name=null and "
+    "is_legitimate_business=false."
 )
+
+_SUBMIT_REPORT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_domain_report",
+        "description": (
+            "Submit the structured research finding for a domain. "
+            "Call this exactly once at the end of your workflow, after "
+            "you have consulted browser_search. This is the only way "
+            "your findings reach the downstream pipeline."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "company_name": {
+                    "type": ["string", "null"],
+                    "description": "Legal entity name or null.",
+                },
+                "industry": {
+                    "type": "string",
+                    "enum": [
+                        "construction", "real_estate", "retail",
+                        "finance", "technology", "manufacturing",
+                        "services", "other", "unknown",
+                    ],
+                },
+                "size_estimate": {
+                    "type": "string",
+                    "enum": [
+                        "small", "medium", "large", "enterprise", "unknown",
+                    ],
+                },
+                "country": {
+                    "type": ["string", "null"],
+                    "description": "ISO-2 country code or null.",
+                },
+                "is_legitimate_business": {"type": "boolean"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "source_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 3,
+                },
+            },
+            "required": [
+                "company_name", "industry", "size_estimate", "country",
+                "is_legitimate_business", "confidence", "source_urls",
+            ],
+        },
+    },
+}
 
 
 async def enrich_domain_via_llm(
@@ -323,16 +372,24 @@ async def enrich_domain_via_llm(
         # Also: reasoning_effort omitted intentionally. On gpt-oss-120b
         # low reasoning_effort silently skips tool calls (community
         # thread #385). Default (medium) reliably invokes browser_search.
-        # Groq SDK's default client timeout is 5s (tight for chat-streaming
-        # use cases). browser_search tool calls need much more headroom —
-        # the server walks search results + synthesises the reply, which
-        # routinely takes 15-30s end-to-end. Override per-request instead
-        # of bumping the global setting.
+        # Groq SDK default client timeout is 5s; browser_search + synthesis
+        # routinely takes 15-30s. Override per-request, keep global tight
+        # for chat streaming.
+        #
+        # Two tools are registered: the built-in browser_search (Groq does
+        # the web request) and a `submit_domain_report` function whose
+        # JSON schema is the structured output we want. gpt-oss-120b
+        # otherwise invents a phantom "json" tool call which Groq rejects
+        # with a 400 — by registering the tool explicitly we get
+        # well-formed arguments in `tool_calls` instead.
         resp = await asyncio.wait_for(
             llm_client.with_options(timeout=_LLM_TIMEOUT).chat.completions.create(
                 model=model,
                 messages=messages,
-                tools=[{"type": "browser_search"}],
+                tools=[
+                    {"type": "browser_search"},
+                    _SUBMIT_REPORT_TOOL,
+                ],
                 max_tokens=2048,
             ),
             timeout=_LLM_TIMEOUT + 5.0,
@@ -350,16 +407,41 @@ async def enrich_domain_via_llm(
         _layer_metric("llm_search", "error")
         return {}
 
-    content = (resp.choices[0].message.content or "").strip()
-    if not content:
-        _layer_metric("llm_search", "miss")
-        return {}
-    data = _parse_intel_json(content)
+    message = resp.choices[0].message
+    data: dict[str, Any] | None = None
+
+    # Preferred path: the model called submit_domain_report. Arguments
+    # are already a JSON string — parse once.
+    tool_calls = getattr(message, "tool_calls", None) or []
+    for tc in tool_calls:
+        fn = getattr(tc, "function", None)
+        if fn is None:
+            continue
+        if getattr(fn, "name", "") == "submit_domain_report":
+            try:
+                data = json.loads(fn.arguments or "{}")
+                break
+            except json.JSONDecodeError as exc:
+                log.warning(
+                    "domain_intel_submit_report_bad_json",
+                    domain=domain,
+                    error=str(exc),
+                    raw=(fn.arguments or "")[:200],
+                )
+
+    # Fallback: some model variants still emit the JSON as message.content
+    # (especially when tool routing picks it as a response type).
+    if data is None:
+        content = (message.content or "").strip()
+        if content:
+            data = _parse_intel_json(content)
+
     if data is None:
         log.warning(
             "domain_intel_llm_bad_json",
             domain=domain,
-            content_head=content[:200],
+            content_head=(message.content or "")[:200],
+            had_tool_calls=bool(tool_calls),
         )
         _layer_metric("llm_search", "error")
         return {}
