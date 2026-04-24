@@ -94,6 +94,7 @@ class PreScoreWorker:
             asyncio.create_task(self._dispatch_loop(), name="prescore-dispatch"),
             asyncio.create_task(self._retry_scheduler(), name="prescore-retry"),
             asyncio.create_task(self._metrics_refresher(), name="prescore-metrics"),
+            asyncio.create_task(self._sweeper_loop(), name="prescore-sweeper"),
         ]
         log.info("prescore_worker_started", max_attempts=MAX_ATTEMPTS)
 
@@ -199,6 +200,10 @@ class PreScoreWorker:
                     ideal_customer_profile=icp,
                     sector=sector,
                     qualification_threshold=threshold,
+                    attempt=attempt,
+                    # On the last retry slot, collapse ensemble failure to
+                    # the data-quality fallback so the lead row is unlocked.
+                    is_final_attempt=(attempt + 1 >= MAX_ATTEMPTS),
                 )
         except Exception as exc:
             log.warning(
@@ -313,6 +318,105 @@ class PreScoreWorker:
             except Exception as exc:
                 log.debug("prescore_metrics_refresh_failed", error=str(exc))
             await self._sleep(10.0)
+
+    # ─────────────────────────────────────────────────────────── sweeper
+
+    async def _sweeper_loop(self) -> None:
+        """Reconcile orphan leads: rows with score=0 that never hit the
+        prescore queue (e.g. router enqueued a Redis RPUSH failure and
+        stamped extra_data.enqueue_failed=true). Re-enqueue them so the
+        pipeline makes progress without operator action.
+
+        Also picks up any legacy score=0 row older than the grace window
+        even without the flag — safety net for crashes between INSERT and
+        the soft-fail mark path.
+        """
+        from app.application.prescore.queue import enqueue_lead
+
+        SWEEP_INTERVAL_S = 60.0
+        # Grace window so we don't race the normal intake path: leads still
+        # in flight (CRM mirror + DB insert + enqueue) finish within seconds.
+        GRACE_MINUTES = 5
+        BATCH_SIZE = 25
+
+        while not self._stop_event.is_set():
+            await self._sleep(SWEEP_INTERVAL_S)
+            if self._stop_event.is_set():
+                return
+            try:
+                async with self._pool.acquire() as conn:
+                    # Superuser RLS bypass: sweeper works across tenants.
+                    await conn.execute(
+                        "SELECT set_config('app.super_admin_bypass', 'true', true)",
+                    )
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT id, tenant_id
+                        FROM qualifier_leads
+                        WHERE score = 0
+                          AND tenant_id IS NOT NULL
+                          AND created_at < NOW() - INTERVAL '{GRACE_MINUTES} minutes'
+                          AND (
+                                (extra_data->>'enqueue_failed')::boolean IS TRUE
+                             OR extra_data->>'enqueue_failed' = 'true'
+                             OR (
+                                  -- Silent orphan fallback: row is old,
+                                  -- no in-flight marker, not yet scored.
+                                  extra_data->>'enqueue_failed' IS NULL
+                                  AND created_at < NOW() - INTERVAL '15 minutes'
+                                )
+                          )
+                        ORDER BY created_at ASC
+                        LIMIT {BATCH_SIZE}
+                        """,
+                    )
+                if not rows:
+                    continue
+                requeued = 0
+                for row in rows:
+                    try:
+                        await enqueue_lead(
+                            self._r,
+                            tenant_id=row["tenant_id"],
+                            lead_id=row["id"],
+                        )
+                        # Clear the flag so we don't re-pick next cycle.
+                        async with self._pool.acquire() as conn2:
+                            await conn2.execute(
+                                "SELECT set_config('app.super_admin_bypass', 'true', true)",
+                            )
+                            await conn2.execute(
+                                """
+                                UPDATE qualifier_leads
+                                   SET extra_data = COALESCE(extra_data, '{}'::jsonb)
+                                                   - 'enqueue_failed'
+                                                   - 'enqueue_failed_at'
+                                                   || jsonb_build_object(
+                                                        'reenqueued_at',
+                                                        to_char(NOW() AT TIME ZONE 'UTC',
+                                                                'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+                                                      )
+                                 WHERE id = $1::uuid
+                                """,
+                                str(row["id"]),
+                            )
+                        requeued += 1
+                    except Exception as exc:
+                        log.warning(
+                            "prescore_sweeper_requeue_failed",
+                            lead_id=str(row["id"]),
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                if requeued:
+                    log.info(
+                        "prescore_sweeper_requeued",
+                        count=requeued,
+                        scanned=len(rows),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.error("prescore_sweeper_error", error=str(exc))
 
     # ─────────────────────────────────────────────────────────── helpers
 

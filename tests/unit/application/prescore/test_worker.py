@@ -44,7 +44,8 @@ class _FakeService:
         self._raise = raise_exc
 
     async def score(self, *, tenant_id, lead_id, conn, ideal_customer_profile,
-                    sector, qualification_threshold):
+                    sector, qualification_threshold,
+                    attempt=0, is_final_attempt=False):
         self.calls.append(_RecordedCall(tenant_id=tenant_id, lead_id=lead_id))
         if self._raise is not None:
             raise self._raise
@@ -304,7 +305,7 @@ class TestLifecycle:
             tenant_resolver=_fake_tenant_resolver,
         )
         await worker.start()
-        assert len(worker._tasks) == 3  # dispatch + retry + metrics
+        assert len(worker._tasks) == 4  # dispatch + retry + metrics + sweeper
         # Give tasks a moment to start
         await asyncio.sleep(0.05)
         await worker.stop()

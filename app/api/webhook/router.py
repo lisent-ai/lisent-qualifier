@@ -201,6 +201,10 @@ async def receive_lead(
         )
 
     # ── 8. Enqueue prescore job (worker picks up, async ensemble) ──────────
+    # Soft-fail only: on Redis hiccups we mark the row so the worker's
+    # reconciliation sweeper can re-enqueue it. Without the mark, a
+    # transient enqueue failure would strand the lead at score=0 until a
+    # human noticed.
     try:
         from app.application.prescore.queue import enqueue_lead
         from app.infrastructure.redis.client import get_redis
@@ -218,6 +222,27 @@ async def receive_lead(
             db_id=db_id,
             error=f"{type(exc).__name__}: {exc}",
         )
+        try:
+            await pool.execute(
+                """
+                UPDATE qualifier_leads
+                   SET extra_data = COALESCE(extra_data, '{}'::jsonb)
+                                    || jsonb_build_object(
+                                           'enqueue_failed', true,
+                                           'enqueue_failed_at',
+                                           to_char(NOW() AT TIME ZONE 'UTC',
+                                                   'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+                                       )
+                 WHERE id = $1::uuid
+                """,
+                db_id,
+            )
+        except Exception as mark_exc:
+            log.warning(
+                "prescore_enqueue_mark_failed",
+                db_id=db_id,
+                error=f"{type(mark_exc).__name__}: {mark_exc}",
+            )
 
     log.info(
         "webhook_lead_accepted",

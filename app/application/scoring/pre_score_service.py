@@ -106,7 +106,21 @@ class PreScoreService:
         ideal_customer_profile: str = "",
         sector: str = "construction",
         qualification_threshold: int = 75,
+        attempt: int = 0,
+        is_final_attempt: bool = False,
     ) -> PreScoreServiceOutcome:
+        """Score a lead.
+
+        Args:
+            attempt: 0 on first try, 1..N on retries. Informational — used
+                with `is_final_attempt` to decide fallback vs raise on
+                ensemble failure.
+            is_final_attempt: when True the caller has no more retries left;
+                ensemble failures collapse to data-quality fallback so the
+                lead row isn't left at score=0 forever. When False (default)
+                ensemble failures propagate so the worker's retry queue can
+                pick the lead up after the next TPM reset cycle.
+        """
         started = time.monotonic()
 
         lead_row = await self._fetch_lead(conn, lead_id)
@@ -116,7 +130,9 @@ class PreScoreService:
         form = self._extract_form(lead_row)
         osint_profile = await self._run_osint(tenant_id, form)
 
-        # Try ensemble; on total failure, fall back to data-quality scoring
+        # Try ensemble; on total failure, either propagate for a worker retry
+        # (early attempts — bursty rate-limit recovers within a minute) or
+        # fall back to data-quality scoring if this is the last attempt.
         ensemble: EnsembleResult | None = None
         fallback: FallbackScore | None = None
         used_fallback = False
@@ -132,11 +148,16 @@ class PreScoreService:
             final_score = ensemble.median_direct_score
         except Exception as exc:
             log.warning(
-                "pre_score_ensemble_total_failure_falling_back",
+                "pre_score_ensemble_total_failure",
                 tenant_id=str(tenant_id),
                 lead_id=str(lead_id),
+                attempt=attempt,
+                is_final_attempt=is_final_attempt,
                 error=f"{type(exc).__name__}: {exc}",
             )
+            if not is_final_attempt:
+                # Bubble so worker schedules a retry with backoff.
+                raise
             fallback = compute_fallback_score(form, reason="ensemble_all_failed")
             final_score = fallback.total
             used_fallback = True

@@ -126,9 +126,16 @@ def _parse_judgment(text: str) -> PreScoreJudgmentResult:
 
 
 @circuit(
-    failure_threshold=5,
-    recovery_timeout=60,
-    expected_exception=(APIStatusError, APITimeoutError, Exception),
+    # Tolerate bursts: 3 personas × several concurrent leads can legitimately
+    # hit a rate-limit window without the Groq upstream being sick. A higher
+    # threshold + shorter recovery rides through reset cycles.
+    failure_threshold=15,
+    recovery_timeout=20,
+    # Only treat *Groq API* failures as circuit signals. RuntimeError from
+    # the rate limiter is situational (TPM window saturated) — if every
+    # throttled call tripped the breaker, a small burst would knock the
+    # whole pipeline out for a minute.
+    expected_exception=(APIStatusError, APITimeoutError),
 )
 @retry(
     stop=stop_after_attempt(2),

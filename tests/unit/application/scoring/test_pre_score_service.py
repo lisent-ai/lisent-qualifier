@@ -198,6 +198,9 @@ class TestPreScoreServiceScore:
         assert event.payload["ensemble"]["median_direct_score"] == 42
 
     async def test_fallback_when_ensemble_totally_fails(self, monkeypatch):
+        """On the final worker attempt, ensemble failure collapses to the
+        data-quality fallback so the lead row is unlocked rather than left
+        looping in the retry queue forever."""
         lead_id = uuid4()
         tenant_id = uuid4()
         conn = _FakeConn({
@@ -226,6 +229,7 @@ class TestPreScoreServiceScore:
 
         outcome = await service.score(
             tenant_id=tenant_id, lead_id=lead_id, conn=conn,
+            is_final_attempt=True,
         )
 
         assert outcome.used_fallback is True
@@ -238,6 +242,40 @@ class TestPreScoreServiceScore:
         # Event still published
         assert len(event_port.published) == 1
         assert event_port.published[0].payload["fallback"]["reason"] == "ensemble_all_failed"
+
+    async def test_raises_on_early_attempt_ensemble_failure(self, monkeypatch):
+        """Before the final attempt, ensemble failure propagates so the
+        worker can schedule a retry with backoff — covering bursty rate
+        limit windows that recover within a minute."""
+        lead_id = uuid4()
+        tenant_id = uuid4()
+        conn = _FakeConn({
+            "id": str(lead_id), "tenant_id": str(tenant_id),
+            "name": "Test", "email": "t@x.com", "phone": "+905551234567",
+            "city": "", "source": "", "project_type": "", "budget_range": "",
+            "extra_data": {}, "raw_payload": {},
+        })
+        event_port = _FakeEventPort()
+        service = PreScoreService(osint=_StubOSINT(), event_port=event_port)
+
+        async def failing_ensemble(**kwargs):
+            raise RuntimeError("groq rate limit")
+
+        monkeypatch.setattr(
+            "app.application.scoring.pre_score_service.run_pre_score_ensemble",
+            failing_ensemble,
+        )
+
+        import pytest as _pytest
+        with _pytest.raises(RuntimeError, match="groq rate limit"):
+            await service.score(
+                tenant_id=tenant_id, lead_id=lead_id, conn=conn,
+                attempt=0, is_final_attempt=False,
+            )
+
+        # No DB writeback, no event published — worker will retry.
+        assert len(conn.executed) == 0
+        assert len(event_port.published) == 0
 
     async def test_osint_failure_ensemble_still_runs(self, monkeypatch):
         lead_id = uuid4()

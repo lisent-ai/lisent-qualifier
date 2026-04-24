@@ -35,13 +35,17 @@ _MAX_TPM = int(_TPM_LIMIT * _TPM_SAFETY_MARGIN)  # ~212,500
 _MAX_CONCURRENT = 10
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
-# Priority budgets (% of _MAX_TPM)
+# Priority budgets (% of _MAX_TPM). Budgets currently inform operator
+# intent + observability; the acquire() loop enforces a single global
+# budget (_MAX_TPM) and relies on max_wait per priority to prioritize
+# critical traffic through rate-limit resets.
 _PRIORITY_BUDGETS = {
-    "chat": 0.35,          # Streaming chat — user-facing, highest priority
-    "judge": 0.30,         # CHAMP Judge extraction — critical for scoring
-    "classify": 0.15,      # Per-message classification — can fallback to rules
-    "field_mapping": 0.10, # Webhook field mapping — can fallback to heuristic
-    "other": 0.10,         # Closing messages, etc.
+    "chat": 0.30,          # Streaming chat — user-facing
+    "judge": 0.25,         # CHAMP Judge extraction — post-chat scorer
+    "prescore": 0.20,      # Pre-score ensemble (3 personas per lead)
+    "classify": 0.10,      # Per-message classification — rules fallback
+    "field_mapping": 0.10, # Webhook field mapping — heuristic fallback
+    "other": 0.05,         # Closing messages, etc.
 }
 
 
@@ -70,6 +74,7 @@ def _window_key() -> str:
 _DEFAULT_MAX_WAIT: dict[str, float] = {
     "chat": 30.0,           # User-facing — wait up to 30s, must not fail
     "judge": 60.0,          # Background extraction — can wait a full cycle
+    "prescore": 60.0,       # Async intake scoring — worker retries anyway
     "classify": 3.0,        # Per-message — fast fail, rules fallback is fine
     "field_mapping": 45.0,  # Webhook intake — not user-facing, can wait
     "other": 10.0,
@@ -92,7 +97,7 @@ async def acquire(
 
     Args:
         estimated_tokens: Estimated total tokens (input + output)
-        priority: "chat" | "judge" | "classify" | "field_mapping" | "other"
+        priority: "chat" | "judge" | "prescore" | "classify" | "field_mapping" | "other"
         max_wait: Override max seconds to wait (None = use default per priority)
 
     Returns:
