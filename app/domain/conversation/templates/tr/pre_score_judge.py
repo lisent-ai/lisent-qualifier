@@ -416,7 +416,7 @@ OUTPUT_SCHEMA_EXAMPLE = """{
     "evidence": ["string", "..."]
   },
   "fit": {
-    "icp_alignment": "off_icp|edge_case|partial_match|close_match|ideal_match",
+    "icp_alignment": "unknown|off_icp|edge_case|partial_match|close_match|ideal_match",
     "project_type_in_tenant_scope": "unknown|off_scope|adjacent|in_scope",
     "geography_in_scope": "unknown|outside|serviceable|core_market",
     "company_size_fit": "unknown|too_small|fit|large_enterprise",
@@ -436,7 +436,7 @@ OUTPUT_SCHEMA_EXAMPLE = """{
     "company_or_buyer_profile": "string",
     "recommended_opening": "string (ilk arama için açı)",
     "risks_to_watch": ["string", "..."],
-    "key_questions_for_call": ["string", "string", "string (3-5 arası)"]
+    "key_questions_for_call": ["string", "string", "string (2-5 arası; minimum 2 zorunlu, tercihen 3)"]
   },
   "direct_score": 0-100,
   "extraction_confidence": 0.0-1.0

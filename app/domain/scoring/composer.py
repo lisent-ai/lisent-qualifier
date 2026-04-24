@@ -66,7 +66,7 @@ _BUYING_STAGE_POINTS = {
 }
 
 _ICP_ALIGNMENT_POINTS = {
-    "off_icp": -8, "edge_case": 0, "partial_match": 6,
+    "unknown": 0, "off_icp": -8, "edge_case": 0, "partial_match": 6,
     "close_match": 14, "ideal_match": 20,
 }
 _PROJECT_TYPE_SCOPE_POINTS = {

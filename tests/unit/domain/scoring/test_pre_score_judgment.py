@@ -84,13 +84,23 @@ class TestPreScoreJudgmentResult:
             )
 
     def test_key_questions_min_length(self):
+        # min_length=2 (relaxed from 3 — prod LLMs sometimes emit only 2 on
+        # minimal-data leads; schema resilience beats strict count).
         with pytest.raises(ValidationError):
             SalesContext(
                 who_they_are="x",
                 company_or_buyer_profile="x",
                 recommended_opening="x",
-                key_questions_for_call=["a", "b"],  # < 3
+                key_questions_for_call=["a"],  # 1 < 2
             )
+        # 2 should now pass
+        ok = SalesContext(
+            who_they_are="x",
+            company_or_buyer_profile="x",
+            recommended_opening="x",
+            key_questions_for_call=["a", "b"],
+        )
+        assert len(ok.key_questions_for_call) == 2
 
     def test_key_questions_max_length(self):
         with pytest.raises(ValidationError):

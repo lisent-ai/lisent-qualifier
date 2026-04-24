@@ -91,8 +91,9 @@ class FitSignals(BaseModel):
     """Tenant'ın ICP'sine uyum — tenant.config'deki ICP tanımına göre."""
 
     icp_alignment: Literal[
+        "unknown",          # yetersiz bilgi — karar verilemedi (diğer fit alanlarıyla tutarlı)
         "off_icp",          # hedef kitlenin açıkça dışında
-        "edge_case",        # belirsiz, sinyal yok
+        "edge_case",        # belirsiz, sinyal var ama zayıf
         "partial_match",    # bir iki kriter eşleşiyor
         "close_match",      # çoğu kriter eşleşiyor
         "ideal_match",      # tam ICP'de
@@ -145,7 +146,7 @@ class SalesContext(BaseModel):
     company_or_buyer_profile: str = Field(max_length=250)
     recommended_opening: str = Field(max_length=250)
     risks_to_watch: list[str] = Field(default_factory=list, max_length=4)
-    key_questions_for_call: list[str] = Field(min_length=3, max_length=5)
+    key_questions_for_call: list[str] = Field(min_length=2, max_length=5)
 
 
 class PreScoreJudgmentResult(BaseModel):
