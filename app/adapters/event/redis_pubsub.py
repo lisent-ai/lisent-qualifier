@@ -64,7 +64,12 @@ class RedisPubSubAdapter(EventPort):
             session_channel = f"session:{event.session_id}"
             await self._r.publish(session_channel, payload)
 
-            if event.event_type in ("lead.scored", "score.updated", "champ.extracted"):
+            if event.event_type in (
+                "lead.scored",
+                "score.updated",
+                "champ.extracted",
+                "pre_score.judged",  # Phase 3 — replayable
+            ):
                 replay_key = f"score_events:{event.session_id}"
                 pipe = self._r.pipeline()
                 pipe.zadd(replay_key, {payload: timestamp_ms})

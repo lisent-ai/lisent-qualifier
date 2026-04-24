@@ -43,7 +43,7 @@ class ScoreEvent:
         dimensions: dict[str, Any] | None = None,
         confidence: float = 0.0,
         extraction_version: int = 0,
-    ) -> "ScoreEvent":
+    ) -> ScoreEvent:
         return cls(
             session_id=session_id,
             timestamp=time.time(),

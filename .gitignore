@@ -1,6 +1,26 @@
 /models/
 __pycache__/
 *.pyc
+*.pyo
 .prompt_simulator.pid
 prompt_simulator.*.log
 Untitled
+
+# Virtual environments (local dev only — never commit)
+.venv/
+.venv_test/
+venv/
+env/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/

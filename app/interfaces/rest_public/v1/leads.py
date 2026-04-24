@@ -23,7 +23,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.infrastructure.db.pool import get_db_pool
-from app.interfaces.rest_public.auth import get_current_tenant
 from app.interfaces.rest_public.rate_limit_dep import enforce_rate_limit
 from app.ports.tenant import Tenant
 
@@ -205,6 +204,32 @@ async def create_lead(
         await RedisUsageCounter(get_redis()).incr(tenant.id, "leads_ingested")
     except Exception as exc:
         log.warning("usage_counter_failed", error=str(exc))
+
+    # Phase 3 — enqueue pre-scoring job (async; response returns score=0).
+    # Worker processes → ensemble + OSINT → UPDATE qualifier_leads.score.
+    # Consumers poll GET /v1/leads/{id}/score or subscribe to score-stream.
+    # Gated by the same flag that controls the worker — no point enqueuing
+    # jobs that won't be picked up (and no point holding a Redis connection
+    # open in test fixtures that aren't exercising the pipeline).
+    from app.config import get_settings as _get_settings
+    if _get_settings().prescore_worker_enabled:
+        try:
+            from app.application.prescore.queue import enqueue_lead
+            from app.infrastructure.redis.client import get_redis
+
+            await enqueue_lead(
+                get_redis(),
+                tenant_id=tenant.id,
+                lead_id=row["id"],
+            )
+        except Exception as exc:
+            log.warning(
+                "prescore_enqueue_failed",
+                tenant_id=str(tenant.id),
+                lead_id=str(row["id"]),
+                error=str(exc),
+            )
+            # Lead is still persisted; manual backfill possible via replay script.
 
     return _row_to_lead(row, tenant.id)
 

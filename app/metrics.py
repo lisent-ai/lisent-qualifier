@@ -1,4 +1,4 @@
-from prometheus_client import Counter, Histogram, Gauge
+from prometheus_client import Counter, Gauge, Histogram
 
 LEADS_RECEIVED = Counter(
     "leads_received_total",
@@ -106,4 +106,84 @@ WEBHOOK_DLQ_SIZE = Gauge(
     "webhook_dlq_size",
     "Per-tenant DLQ size (jobs exhausted all retries)",
     ["tenant_id"],
+)
+
+# ── Pre-Score pipeline metrics (Phase 3) ────────────────────────────────────
+
+PRESCORE_ACTIVE_TENANTS = Gauge(
+    "prescore_active_tenants",
+    "Number of tenants currently having queued pre-score items",
+)
+
+PRESCORE_RETRY_DEPTH = Gauge(
+    "prescore_retry_depth",
+    "Current size of the pre-score retry ZSET",
+)
+
+PRESCORE_DLQ_SIZE = Gauge(
+    "prescore_dlq_size",
+    "Per-tenant pre-score DLQ size",
+    ["tenant_id"],
+)
+
+PRESCORE_QUEUE_DEPTH = Gauge(
+    "prescore_queue_depth",
+    "Per-tenant pre-score queue depth",
+    ["tenant_id"],
+)
+
+PRESCORE_LATENCY_SECONDS = Histogram(
+    "prescore_latency_seconds",
+    "Wall-clock latency of a full pre-score pipeline (OSINT + ensemble + DB write + event)",
+    buckets=[0.5, 1, 2, 3, 5, 8, 12, 20],
+)
+
+PRESCORE_SCORE_HISTOGRAM = Histogram(
+    "prescore_final_score",
+    "Distribution of final pre-score values",
+    buckets=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+)
+
+PRESCORE_FALLBACK_TOTAL = Counter(
+    "prescore_fallback_total",
+    "Pre-score ensemble fell back to data_quality_fallback",
+    ["reason"],
+)
+
+PRESCORE_DIVERGENCE_TOTAL = Counter(
+    "prescore_divergence_total",
+    "|LLM median - formula audit| > threshold",
+)
+
+PRESCORE_PERSONA_FAILURES = Counter(
+    "prescore_persona_failures_total",
+    "Per-persona failures inside the ensemble",
+    ["persona"],
+)
+
+# ── OSINT subsystem metrics (Phase 3) ───────────────────────────────────────
+
+OSINT_CACHE_HIT_TOTAL = Counter(
+    "osint_cache_hit_total",
+    "OSINT profile DB cache hits",
+    ["provider"],
+)
+
+OSINT_CACHE_MISS_TOTAL = Counter(
+    "osint_cache_miss_total",
+    "OSINT profile DB cache misses (upstream fetched)",
+    ["provider"],
+)
+
+OSINT_LATENCY_SECONDS = Histogram(
+    "osint_latency_seconds",
+    "Per-provider OSINT upstream fetch latency",
+    ["provider"],
+    buckets=[0.1, 0.5, 1, 2, 4, 8, 12],
+)
+
+OSINT_FAILURES_TOTAL = Counter(
+    "osint_failures_total",
+    "OSINT upstream failures",
+    ["provider", "reason"],  # reason ∈ {timeout, http_error, circuit_open, parse}
 )

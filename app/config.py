@@ -64,6 +64,26 @@ class Settings(BaseSettings):
     judge_self_consistency_passes: int = 3
     judge_fallback_to_champ: bool = True
 
+    # Pre-Score Judge (Phase 3 — intake'te çalışan ensemble judge)
+    pre_score_judge_max_tokens: int = 2048
+    pre_score_judge_timeout: int = 12
+    pre_score_ensemble_personas: list[str] = Field(
+        default_factory=lambda: ["skeptic", "neutral", "opportunity"],
+    )
+    pre_score_divergence_threshold: int = 20
+    # Master switch: app lifespan starts the worker only when true.
+    # Integration tests and smoke envs default-off to avoid unintended
+    # Groq traffic; enable explicitly in prod via env var.
+    prescore_worker_enabled: bool = False
+
+    # OSINT (Phase 3)
+    osint_enabled: bool = False
+    osint_phoneinfoga_url: str = "http://phoneinfoga:5000"
+    osint_holehe_url: str = "http://holehe-api:8000"
+    osint_profile_stale_days: int = 60
+    osint_request_timeout_s: float = 15.0
+    osint_holehe_timeout_per_module: float = 4.0
+
     # Smart extraction
     smart_extraction_enabled: bool = True
     signal_trigger_min_message_length: int = 15

@@ -23,7 +23,6 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import asdict
-from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -42,11 +41,16 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_ENQUEUE_EVENT_TYPES = frozenset({"score.updated", "lead.scored", "lead.qualified"})
+_ENQUEUE_EVENT_TYPES = frozenset({
+    "score.updated",
+    "lead.scored",
+    "lead.qualified",
+    "pre_score.judged",  # Phase 3 — pre-score ensemble result
+})
 
 
 class WebhookFanoutAdapter(EventPort):
-    def __init__(self, redis: "Redis", db_pool: "asyncpg.Pool") -> None:
+    def __init__(self, redis: Redis, db_pool: asyncpg.Pool) -> None:
         self._r = redis
         self._pool = db_pool
 

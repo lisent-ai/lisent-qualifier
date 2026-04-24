@@ -1,0 +1,66 @@
+# Production compose for Dokploy deployment.
+#
+# Differs from the local `docker-compose.yml` by:
+#   - No host port bindings — services are only reachable on `dokploy-network`
+#     (internal DNS: `phoneinfoga:5000`, `holehe-api:8000`).
+#   - `dokploy-network` joined as external so the qualifier container can
+#     resolve these services by their compose service name.
+#
+# Dokploy panel config:
+#   App name:   lisent-osint-stack
+#   Source:     git — lisent-ai/lisent-qualifier @ main
+#   Compose:    infra/osint/docker-compose.prod.yml
+#
+# Env vars (set in Dokploy Environment UI, all optional):
+#   NUMVERIFY_API_KEY  — deeper phone OSINT (numverify scanner). Without this,
+#                         PhoneInfoga still returns country + E.164 normalize.
+#   GOOGLE_API_KEY     — Google Custom Search Engine scanner (dork).
+#   GOOGLECSE_CX       — CSE ID (pair with GOOGLE_API_KEY).
+#   HOLEHE_DEFAULT_TIMEOUT     — per-module holehe timeout, seconds (default 4.0)
+#   HOLEHE_MAX_CONCURRENCY     — async semaphore cap (default 20)
+
+services:
+  phoneinfoga:
+    image: sundowndev/phoneinfoga:latest
+    container_name: lisent-osint-phoneinfoga
+    restart: unless-stopped
+    command: ["serve", "-p", "5000"]
+    networks:
+      - osint-net
+      - dokploy-network
+    environment:
+      - NUMVERIFY_API_KEY=${NUMVERIFY_API_KEY:-}
+      - GOOGLECSE_CX=${GOOGLECSE_CX:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  holehe-api:
+    build:
+      context: ./holehe-api
+    image: lisent/holehe-api:prod
+    container_name: lisent-osint-holehe-api
+    restart: unless-stopped
+    networks:
+      - osint-net
+      - dokploy-network
+    environment:
+      - HOLEHE_DEFAULT_TIMEOUT=${HOLEHE_DEFAULT_TIMEOUT:-4.0}
+      - HOLEHE_MAX_CONCURRENCY=${HOLEHE_MAX_CONCURRENCY:-20}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+networks:
+  osint-net:
+    name: lisent-osint-net
+    driver: bridge
+  dokploy-network:
+    external: true

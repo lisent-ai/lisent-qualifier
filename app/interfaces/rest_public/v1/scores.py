@@ -260,7 +260,8 @@ async def get_lead_score(
             row = await conn.fetchrow(
                 """
                 SELECT
-                    l.id, l.score, l.status, l.path, l.score_breakdown, l.updated_at,
+                    l.id, l.score, l.status, l.path, l.score_breakdown,
+                    l.extra_data, l.updated_at,
                     s.champ_json, s.updated_at AS session_updated_at,
                     h.reasoning_json
                 FROM qualifier_leads l
@@ -300,11 +301,51 @@ async def get_lead_score(
     # Scored timestamp: fresh scoring varsa son session update_at, yoksa lead updated_at
     scored_at = row.get("session_updated_at") or row["updated_at"]
 
-    explanation = {
+    explanation: dict[str, Any] = {
         "components": {name: comp.model_dump() for name, comp in components.items()},
         "champ": champ.model_dump(),
         "recommendation": recommendation.model_dump(),
     }
+
+    # Phase 3 — additive: pre-score ensemble breakdown + OSINT provenance
+    # (yeni pre-scoring pipeline'ın ürettiği zengin kanıt + sales context).
+    # Mevcut consumer'lar bu key'leri görmezden gelir — `dict[str, Any]` typed.
+    if isinstance(score_breakdown, dict):
+        pre_score_ensemble = score_breakdown.get("pre_score_ensemble")
+        if isinstance(pre_score_ensemble, dict):
+            # Glass-box için özet — raw_personas çok büyük (audit için
+            # JSONB'de kalır ama payload'a sokulmaz).
+            summary = {
+                "median_direct_score": pre_score_ensemble.get("median_direct_score"),
+                "formula_audit_score": pre_score_ensemble.get("formula_audit_score"),
+                "divergent": pre_score_ensemble.get("divergent"),
+                "extraction_confidence": pre_score_ensemble.get("extraction_confidence"),
+                "persona_scores": pre_score_ensemble.get("persona_scores"),
+                "enum_disagreements": pre_score_ensemble.get("enum_disagreements"),
+            }
+            # Aggregated signals + sales_context — satış ekibi glass-box'ı
+            agg = pre_score_ensemble.get("aggregated_signals")
+            if isinstance(agg, dict):
+                summary["signals"] = {
+                    "identity": agg.get("identity"),
+                    "intent": agg.get("intent"),
+                    "fit": agg.get("fit"),
+                    "risk": agg.get("risk"),
+                }
+                summary["sales_context"] = agg.get("sales_context")
+            explanation["pre_score_ensemble"] = summary
+
+        fallback = score_breakdown.get("pre_score_fallback")
+        if isinstance(fallback, dict):
+            explanation["pre_score_fallback"] = fallback
+
+    # OSINT provenance — extra_data.osint JSONB'den (ayrı query maliyeti
+    # istemiyoruz, _fetch_lead row'da extra_data zaten mevcut).
+    extra_data = _parse_jsonb(row.get("extra_data"))
+    if isinstance(extra_data, dict) and isinstance(extra_data.get("osint"), dict):
+        osint = extra_data["osint"]
+        # Full OSINT dict — ham data zaten 1-2KB (provider + phone + email summary)
+        explanation["osint"] = osint
 
     return ScoreResponse(
         lead_id=lead_id,

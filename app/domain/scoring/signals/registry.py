@@ -9,12 +9,12 @@ Usage:
 """
 from __future__ import annotations
 
+from app.domain.scoring.qualifiers.base import SectorQualifier
 from app.domain.scoring.signals.base import (
     BuyingSignalDetector,
     NegativeSignalDetector,
     SentimentAnalyzer,
 )
-from app.domain.scoring.qualifiers.base import SectorQualifier
 
 
 class SignalRegistry:
@@ -76,7 +76,11 @@ class SignalRegistry:
             from app.domain.scoring.signals.sectors.construction import compute_seasonal_modifier
             return compute_seasonal_modifier(month)
         if sec in ("real_estate", "real-estate", "realestate", "emlak", "gayrimenkul"):
-            from app.domain.scoring.signals.sectors.real_estate import compute_seasonal_modifier as re_seasonal
+            from app.domain.scoring.signals.sectors.real_estate import (
+                compute_seasonal_modifier as re_seasonal,
+            )
             return re_seasonal(month)
-        from app.domain.scoring.signals.sectors.general import compute_seasonal_modifier as general_seasonal
+        from app.domain.scoring.signals.sectors.general import (
+            compute_seasonal_modifier as general_seasonal,
+        )
         return general_seasonal(month)

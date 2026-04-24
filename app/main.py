@@ -1,31 +1,30 @@
 import asyncio
-import structlog
+import logging
+import sys
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
+import structlog
 from fastapi import FastAPI
 from prometheus_client import make_asgi_app
 
-from app.config import get_settings
-from app.infrastructure.redis.client import create_redis_pool, close_redis_pool
-from app.infrastructure.db.pool import init_db_pool, close_db_pool
-from app.infrastructure.llm.local_llm_client import close_http_client
-from app.infrastructure.llm.groq_client import close_groq_client
-from app.infrastructure.crm.webhook_client import close_crm_client
-from app.infrastructure.crm.rest_client import close_crm_rest_client
-from app.infrastructure.greenapi.client import close_greenapi_client
-from app.api.webhook.router import router as webhook_router
 from app.api.chat.router import router as chat_router
 from app.api.health.router import router as health_router
-from app.api.whatsapp.router import router as whatsapp_router
 from app.api.leads.router import router as leads_router
-from app.api.sessions.router import router as sessions_router
-from app.api.rag.router import router as rag_router
 from app.api.middleware.request_id import RequestIDMiddleware
+from app.api.rag.router import router as rag_router
+from app.api.sessions.router import router as sessions_router
+from app.api.webhook.router import router as webhook_router
+from app.api.whatsapp.router import router as whatsapp_router
+from app.config import get_settings
+from app.infrastructure.crm.rest_client import close_crm_rest_client
+from app.infrastructure.crm.webhook_client import close_crm_client
+from app.infrastructure.db.pool import close_db_pool, init_db_pool
+from app.infrastructure.greenapi.client import close_greenapi_client
+from app.infrastructure.llm.groq_client import close_groq_client
+from app.infrastructure.llm.local_llm_client import close_http_client
+from app.infrastructure.redis.client import close_redis_pool, create_redis_pool
 from app.interfaces.rest_public import v1_router  # Phase 1.E: public v1 API
-
-import logging
-import sys
 
 
 def _configure_logging(log_level: str) -> None:
@@ -46,7 +45,7 @@ def _configure_logging(log_level: str) -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     settings = get_settings()
     _configure_logging(settings.log_level)
 
@@ -87,6 +86,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         log.warning("webhook_worker_start_failed", error=str(exc))
         webhook_worker = None
 
+    # Phase 3 — start pre-score worker (3-persona ensemble + OSINT + audit).
+    # Gated by `PRESCORE_WORKER_ENABLED` env var. Disabled by default so the
+    # worker is not auto-started in test fixtures that spin up the lifespan.
+    # Flip to `true` in prod once migration 004 + OSINT stack are deployed.
+    prescore_worker = None
+    if settings.prescore_worker_enabled:
+        try:
+            from app.interfaces.rest_public.di import get_pre_score_worker
+
+            prescore_worker = await get_pre_score_worker()
+            await prescore_worker.start()
+        except Exception as exc:
+            log.warning("prescore_worker_start_failed", error=str(exc))
+            prescore_worker = None
+
     yield
 
     # Shutdown
@@ -103,6 +117,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await webhook_worker.stop()
         except Exception as exc:
             log.warning("webhook_worker_stop_failed", error=str(exc))
+    if prescore_worker is not None:
+        try:
+            await prescore_worker.stop()
+        except Exception as exc:
+            log.warning("prescore_worker_stop_failed", error=str(exc))
+    try:
+        from app.interfaces.rest_public.di import close_osint_adapter
+        await close_osint_adapter()
+    except Exception as exc:
+        log.warning("osint_adapter_close_failed", error=str(exc))
 
     await close_http_client()
     await close_groq_client()
@@ -116,11 +140,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 async def _greeting_worker() -> None:
     """Background coroutine: process WhatsApp greeting queue sequentially."""
-    from app.infrastructure.redis.session_repo import SessionRepository
-    from app.infrastructure.redis.score_repo import ScoreRepository
-    from app.infrastructure.redis.client import get_redis
-    from app.application.lead_intake.greeting_worker import wa_greeting_worker
     import structlog as sl
+
+    from app.application.lead_intake.greeting_worker import wa_greeting_worker
+    from app.infrastructure.redis.client import get_redis
+    from app.infrastructure.redis.score_repo import ScoreRepository
+    from app.infrastructure.redis.session_repo import SessionRepository
 
     log = sl.get_logger(__name__)
     # Wait for Redis to be ready
@@ -138,10 +163,11 @@ async def _greeting_worker() -> None:
 
 async def _outbox_flusher() -> None:
     """Background coroutine: flush CRM outbox every 60 seconds."""
-    from app.infrastructure.redis.session_repo import SessionRepository
-    from app.infrastructure.redis.client import get_redis
-    from app.infrastructure.crm.webhook_client import flush_outbox
     import structlog as sl
+
+    from app.infrastructure.crm.webhook_client import flush_outbox
+    from app.infrastructure.redis.client import get_redis
+    from app.infrastructure.redis.session_repo import SessionRepository
 
     log = sl.get_logger(__name__)
     while True:

@@ -4,7 +4,7 @@ CHAMPScore — Challenges, Authority, Money, Prioritization.
 Replaces BANTScore with per-dimension confidence tracking
 and extraction versioning for audit trail.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

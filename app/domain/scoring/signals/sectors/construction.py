@@ -3,7 +3,6 @@ Construction sector — negative signals, seasonality, and sector-specific detec
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime
 
 from app.domain.scoring.signals.base import NegativeSignalDetector, NegativeSignalResult

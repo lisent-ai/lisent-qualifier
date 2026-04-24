@@ -8,8 +8,7 @@ All methods are pure (no I/O).
 """
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from app.domain.scoring.champ import CHAMPScore
@@ -59,7 +58,7 @@ class ScoringWeights:
     sector_bonus: float = 0.10
 
     @classmethod
-    def from_config(cls, config: dict[str, Any] | None) -> "ScoringWeights":
+    def from_config(cls, config: dict[str, Any] | None) -> ScoringWeights:
         if not config:
             return cls()
         weights = config.get("scoring_weights", {})
