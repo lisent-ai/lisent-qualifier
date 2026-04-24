@@ -63,6 +63,11 @@ services:
       PRE_SCORE_JUDGE_MAX_TOKENS: ${PRE_SCORE_JUDGE_MAX_TOKENS:-2048}
       PRE_SCORE_JUDGE_TIMEOUT: ${PRE_SCORE_JUDGE_TIMEOUT:-12}
       PRE_SCORE_DIVERGENCE_THRESHOLD: ${PRE_SCORE_DIVERGENCE_THRESHOLD:-20}
+      # When false (default), pre-scoring does not push ai_status or ai_path
+      # to the CRM. Score + breakdown still flow through so sales see the
+      # context; threshold-driven bucketing is disabled. Flip to true to
+      # restore the old auto-qualified / fast-path routing behavior.
+      PRESCORE_APPLY_STATUS_ROUTING: ${PRESCORE_APPLY_STATUS_ROUTING:-false}
       # Phase 7.B — inbound CRM webhook listener (replaces REST PATCH).
       # Dual-write default: listener OFF + REST ON. Flip listener to true once
       # the CRM side endpoint is deployed; leave REST true for 1 week of

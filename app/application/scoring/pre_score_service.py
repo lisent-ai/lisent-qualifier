@@ -438,9 +438,15 @@ class PreScoreService:
 
         settings = get_settings()
 
+        # Whether to write routing signals (ai_status + ai_path) in addition
+        # to the score itself. Default OFF — pre-scoring just computes the
+        # score; sales decides what to do with the lead.
+        apply_routing = settings.prescore_apply_status_routing
+        routing_path = path if apply_routing else ""
+        status_label = "qualified" if path == "fast" else "new"
+
         # Shared payload shapes — computed once, used by both channels so
         # they stay byte-identical during dual-write.
-        status_label = "qualified" if path == "fast" else "new"
         breakdown_payload: dict[str, Any] = {"fit_score": final_score}
         if ensemble is not None:
             breakdown_payload["pre_score_ensemble"] = {
@@ -488,7 +494,10 @@ class PreScoreService:
                         crm_lead_id=crm_lead_id,
                         score=final_score,
                         threshold=threshold,
-                        path=path,
+                        # Empty path → CRM handler skips ai_status + ai_path
+                        # writes, leaving whatever value (or NULL) is already
+                        # on the lead row untouched.
+                        path=routing_path,
                         payload=payload,
                         event_id=f"pre-score-{crm_lead_id}",
                     )
@@ -503,14 +512,15 @@ class PreScoreService:
         if settings.prescore_crm_rest_enabled:
             try:
                 from app.application.crm_sync import try_update_ai_metadata
-                await try_update_ai_metadata(
-                    crm_lead_id,
-                    score=final_score,
-                    status=status_label,
-                    score_breakdown=breakdown_payload,
-                    path=path,
-                    idempotency_key=f"lead-pre-score-{crm_lead_id}",
-                )
+                rest_kwargs: dict[str, Any] = {
+                    "score": final_score,
+                    "score_breakdown": breakdown_payload,
+                    "idempotency_key": f"lead-pre-score-{crm_lead_id}",
+                }
+                if apply_routing:
+                    rest_kwargs["status"] = status_label
+                    rest_kwargs["path"] = path
+                await try_update_ai_metadata(crm_lead_id, **rest_kwargs)
             except Exception as exc:
                 log.warning(
                     "crm_ai_metadata_patch_failed",

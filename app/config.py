@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     # Groq traffic; enable explicitly in prod via env var.
     prescore_worker_enabled: bool = False
 
+    # Post-Phase 7 — gate threshold-driven routing side effects. When False
+    # (the current default) pre-scoring computes the score + breakdown + sales
+    # context but does NOT push ai_status or ai_path to the CRM, so sales sees
+    # the score without the lead getting auto-bucketed into "qualified" / "new"
+    # or routed down a fast/chat path. Flip to True to restore the previous
+    # auto-routing behavior.
+    prescore_apply_status_routing: bool = False
+
     # Phase 7.B — inbound CRM webhook listener (replaces REST PATCH of ai-metadata).
     # CRM side exposes POST /internal/webhooks/qualifier/pre-score and verifies
     # HMAC-SHA256 over `{timestamp_ms}.{body}` with the shared secret. When the
