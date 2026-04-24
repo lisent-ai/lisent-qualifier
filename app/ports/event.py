@@ -54,6 +54,15 @@ class ScoreEvent:
     payload: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
+    # Loop-prevention metadata. Populated when the lead originated in an
+    # external system (e.g. a partner CRM pushing into our inbound webhook).
+    # Carried on the outbound webhook so the receiver can upsert by
+    # external_id and recognize its own records instead of treating them as
+    # new leads. None when the lead was created natively in Lisent.
+    external_id: str | None = None
+    origin_system: str | None = None  # e.g. "partner_intranet", "lisent_native"
+    source: str | None = None         # human-readable channel label
+
 
 class EventPort(ABC):
     """Event pub/sub — SSE + webhook + audit."""

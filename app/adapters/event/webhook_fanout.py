@@ -55,6 +55,23 @@ class WebhookFanoutAdapter(EventPort):
         if cfg is None:
             return
 
+        # Loop-prevention: suppress lifecycle-style echoes for leads that
+        # originated in the partner CRM. If a partner pushed a lead into our
+        # inbound webhook, firing `lead.created` / `lead.updated` back to the
+        # same partner re-creates the source loop. Scoring events still flow
+        # (`score.*`, `pre_score.*`) because partners explicitly want score
+        # updates — the body carries `external_id` so they can upsert
+        # instead of insert.
+        if event.origin_system == "partner_intranet" and event.event_type.startswith("lead."):
+            log.debug(
+                "webhook_loop_suppressed",
+                tenant_id=str(event.tenant_id),
+                event_type=event.event_type,
+                origin_system=event.origin_system,
+                external_id=event.external_id,
+            )
+            return
+
         patterns = cfg.get("enabled_events") or ["*"]
         if not matches(event.event_type, patterns):
             log.debug(
@@ -175,6 +192,13 @@ class WebhookFanoutAdapter(EventPort):
         doc["session_id"] = str(event.session_id) if event.session_id else None
         doc["timestamp"] = event.timestamp.isoformat()
         doc["event_id"] = event_id
+        # Loop-prevention metadata lives at the top level for fast upsert
+        # matching on the receiver without recursing into `payload`.
+        # `asdict` already emits external_id/origin_system/source — drop the
+        # keys when unset to keep the envelope clean.
+        for k in ("external_id", "origin_system", "source"):
+            if doc.get(k) is None:
+                doc.pop(k, None)
         if mode == "minimal":
             # Strip the nested payload dict — the consumer can pull detail
             # from the REST API using (tenant_id, lead_id). Top-level

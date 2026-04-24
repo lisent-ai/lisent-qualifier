@@ -8,6 +8,7 @@ report what happened."
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -60,6 +61,17 @@ async def deliver(
         "X-Lisent-Event-Type": event_type,
         "X-Lisent-Delivery-Id": delivery_id,
     }
+
+    # Loop-prevention metadata. When the event body carries origin_system +
+    # external_id (set by the publisher for leads that originated in a partner
+    # CRM), surface them as headers so the receiver can upsert by external_id
+    # and suppress echo-back without parsing the body. Body always wins; the
+    # headers are a fast-path hint.
+    origin, external_id = _extract_origin_headers(body)
+    if origin:
+        headers["X-Lisent-Origin"] = origin
+    if external_id:
+        headers["X-Lisent-External-Id"] = external_id
 
     owns_client = client is None
     if owns_client:
@@ -116,3 +128,30 @@ async def deliver(
     finally:
         if owns_client:
             await client.aclose()
+
+
+def _extract_origin_headers(body: bytes) -> tuple[str | None, str | None]:
+    """Pull origin_system + external_id out of the serialized event body.
+
+    Looks at top-level keys first, then `payload.*` — publishers may put the
+    metadata either place. Returns (origin_system, external_id) with Nones
+    when absent. Defensive against malformed JSON: webhook signing already
+    happened, so a parse error here must never break delivery.
+    """
+    try:
+        doc = json.loads(body)
+    except (ValueError, TypeError):
+        return None, None
+    if not isinstance(doc, dict):
+        return None, None
+
+    def _pick(key: str) -> str | None:
+        val = doc.get(key)
+        if val is None and isinstance(doc.get("payload"), dict):
+            val = doc["payload"].get(key)
+        if val is None:
+            return None
+        s = str(val).strip()
+        return s or None
+
+    return _pick("origin_system"), _pick("external_id")
