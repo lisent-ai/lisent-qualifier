@@ -27,12 +27,12 @@ class TestDisposableList:
         assert is_disposable("onurinsaat.com.tr") is False
         assert is_disposable("google.com") is False
 
-    def test_common_freemails_flagged(self):
+    def test_common_public_providers_flagged(self):
         for d in ("gmail.com", "Gmail.com", "hotmail.com", "yandex.ru",
                   "yahoo.com.tr", "outlook.com", "protonmail.com"):
-            assert is_freemail(d), f"{d} should be freemail"
+            assert is_freemail(d), f"{d} should be a public provider"
 
-    def test_corporate_not_freemail(self):
+    def test_corporate_not_public_provider(self):
         assert is_freemail("onurinsaat.com.tr") is False
 
 
@@ -45,23 +45,30 @@ class TestClassifyDomain:
         assert classify_domain("mailinator.com") == "disposable"
         assert classify_domain("10minutemail.com") == "disposable"
 
-    def test_freemail_bucket(self):
-        assert classify_domain("gmail.com") == "freemail"
-        assert classify_domain("yandex.ru") == "freemail"
+    def test_public_provider_bucket(self):
+        # Gmail/outlook/yandex are NOT stigmatized as "freemail"; they
+        # are objectively classified as public_provider and treated as
+        # a neutral category by the scorer.
+        assert classify_domain("gmail.com") == "public_provider"
+        assert classify_domain("yandex.ru") == "public_provider"
+        assert classify_domain("outlook.com") == "public_provider"
 
-    def test_edu_tr_verified(self):
-        assert classify_domain("bogazici.edu.tr") == "corporate_verified"
+    def test_registry_tld_tr(self):
+        assert classify_domain("bogazici.edu.tr") == "registry_tld"
+        assert classify_domain("tuik.gov.tr") == "registry_tld"
 
-    def test_gov_tr_verified(self):
-        assert classify_domain("tuik.gov.tr") == "corporate_verified"
+    def test_country_tld_tr(self):
+        assert classify_domain("onurinsaat.com.tr") == "country_tld"
 
-    def test_com_tr_suspected(self):
-        assert classify_domain("onurinsaat.com.tr") == "corporate_suspected"
+    def test_country_tld_cctld(self):
+        assert classify_domain("kohler.de") == "country_tld"
+        assert classify_domain("siemens.fr") == "country_tld"
 
-    def test_generic_com_suspected(self):
-        # Corporate-looking but no stronger signal until MX check fires.
-        assert classify_domain("example.com") == "corporate_suspected"
+    def test_generic_tld(self):
+        # Custom domain with a generic TLD, not a public provider.
+        assert classify_domain("example.com") == "generic_tld"
+        assert classify_domain("getbranded.net") == "generic_tld"
 
     def test_case_insensitive(self):
-        assert classify_domain("GMAIL.com") == "freemail"
-        assert classify_domain("TUIK.gov.tr") == "corporate_verified"
+        assert classify_domain("GMAIL.com") == "public_provider"
+        assert classify_domain("TUIK.gov.tr") == "registry_tld"

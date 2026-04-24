@@ -131,6 +131,31 @@ yatırımcısı, Avrupalı developer, ABD merkezli fon). Kapsama alanını \
 `geography_in_scope` ve `segment_label` ile işaretle; sales_context \
 yazımın dili yine Türkçe (Lisent sales operatörü TR).
 
+## email_domain_class sınıflandırma kuralları
+
+**Tamamen objektif, önyargısız sınıflandırma yap.** Olası değerler:
+
+- `disposable`: küratörlü blocklist'ten bilinen tek-kullanımlık servis \
+(mailinator, tempmail, yopmail, vb.) — bu gerçek bir fraud/test sinyali.
+- `public_provider`: gmail, outlook, yahoo, icloud, yandex, protonmail, \
+mail.ru, gmx vb. herkese açık email servisleri. **Bu DAMGALAYICI BİR \
+ETİKET DEĞİL.** Türkiye'deki tüketicilerin ve birçok KOBİ alıcısının \
+en yaygın kullandığı adreslerdir. Bir lead'in gmail adresi olması \
+TEK BAŞINA düşük niyet anlamına gelmez; sadece gerçek yargılamayı \
+`notes`, `budget`, `project_type`, `authority_signal` üzerinden yap. \
+**Public_provider'ı risks_to_watch'a YAZMA.**
+- `registry_tld`: `.gov(.tr)`, `.edu(.tr)` — resmi kayıtlı kurumsal \
+veya akademik tescil, objektif doğrulanmış.
+- `country_tld`: `.com.tr`, `.co.uk`, `.de`, `.fr` vb. — ülke bazlı \
+domain. Pazarda faaliyet işareti (zayıf pozitif), kesin kurumsal \
+değil.
+- `generic_tld`: `.com`, `.net`, `.org`, `.io` vb. custom domain \
+(public_provider olmayan). Tipik: KOBİ veya uluslararası firma.
+- `missing`: email yok.
+
+**Bias yasağı**: "corporate_suspected" veya "freemail" gibi öznel/ \
+damgalayıcı terim üretme. Yukarıdaki objektif enum'a bağlı kal.
+
 ## Sektör & ICP Bağlamı
 
 Sektör: {sector}
@@ -222,7 +247,7 @@ FEW_SHOTS_TR_CONSTRUCTION = '''## Örnek 1 — IDEAL KURUMSAL LEAD (beklenen dir
   "thinking": "Kurumsal .com.tr domain, isim+soyisim eşleşmesi, PM rolü, net plaza projesi detayı, spesifik bütçe aralığı, committed timeline (Eylül), sole_decider sinyali (karar kurulu + PM). ICP tam eşleşme — inşaat sektörü, kurumsal müteahhit, commercial proje, core market (Ankara). Risk yok: corporate email, valid mobile, tutarlı içerik. extraction_confidence yüksek çünkü her sinyal için kanıt var.",
   "identity": {
     "name_quality": "strong",
-    "email_domain_class": "corporate_verified",
+    "email_domain_class": "country_tld",
     "phone_validity": "valid_format",
     "osint_digital_footprint": "medium",
     "evidence": ["form.name='Ayşe Yılmaz' + form.email@onurinsaat.com.tr (isim/soyisim + domain eşleşme)", "osint.email.registered_sites: ['linkedin','github','gravatar','office365'] (12 site)"]
@@ -290,7 +315,7 @@ FEW_SHOTS_TR_CONSTRUCTION = '''## Örnek 1 — IDEAL KURUMSAL LEAD (beklenen dir
 ```json
 {
   "phone": {"country": "TR", "country_code": 90, "e164": "+905551234567", "valid": true},
-  "email": {"domain": "gmail.com", "domain_type": "freemail", "registered_sites": ["amazon", "spotify"], "site_count": 2, "any_rate_limited": true},
+  "email": {"domain": "gmail.com", "domain_type": "public_provider", "registered_sites": ["amazon", "spotify"], "site_count": 2, "any_rate_limited": true},
   "notes": ["phone country=TR", "email domain_type=freemail", "email found on 2 site(s)"]
 }
 ```
@@ -301,7 +326,7 @@ FEW_SHOTS_TR_CONSTRUCTION = '''## Örnek 1 — IDEAL KURUMSAL LEAD (beklenen dir
   "thinking": "Eksik soyisim, freemail, şehir yok, proje detayı yok, bütçe yok, zamanlama yok, karar yetkisi yok. Sadece 'villa fiyatları merak' — bu curious_browsing bile zayıf. OSINT'te 2 site çok düşük footprint. Herhangi bir somut niyet sinyali yok. Ama RISK de yok: freemail disposable değil, telefon geçerli, spam değil, çelişki yok. Bu tipik bir 'bilgi toplayan tüketici' lead'i — yıpranmış form completion. extraction_confidence orta çünkü veri az ama içerik net şekilde zayıf.",
   "identity": {
     "name_quality": "weak",
-    "email_domain_class": "freemail",
+    "email_domain_class": "public_provider",
     "phone_validity": "valid_format",
     "osint_digital_footprint": "low",
     "evidence": ["form.name='Mehmet' (soyisim eksik)", "form.email@gmail.com (freemail)", "osint.email.site_count=2"]
@@ -442,7 +467,7 @@ Input:
   },
   "osint": {
     "phone": {"country": "TR", "carrier": "Turkcell", "line_type": "mobile", "valid": true},
-    "email": {"domain": "gmail.com", "domain_type": "freemail", "registered_sites": [], "site_count": 0}
+    "email": {"domain": "gmail.com", "domain_type": "public_provider", "registered_sites": [], "site_count": 0}
   }
 }
 ```
@@ -457,7 +482,7 @@ işareti; ancak freemail TR mobile iyi niyetli ilk temas da olabilir. Uydurma \
 yapmam gerek değil — discovery call'la aydınlatılmalı.",
   "identity": {
     "name_quality": "weak",
-    "email_domain_class": "freemail",
+    "email_domain_class": "public_provider",
     "phone_validity": "valid_format",
     "osint_digital_footprint": "none",
     "evidence": ["form.name='Ayşe' (sadece ad, soyad yok)", "email.domain=gmail.com", "osint.email.site_count=0"]
@@ -518,7 +543,7 @@ OUTPUT_SCHEMA_EXAMPLE = """{
   "thinking": "string (max 2500) — adım adım muhakeme",
   "identity": {
     "name_quality": "missing|random|weak|plausible|strong",
-    "email_domain_class": "missing|disposable|freemail|corporate_suspected|corporate_verified",
+    "email_domain_class": "missing|disposable|public_provider|registry_tld|country_tld|generic_tld",
     "phone_validity": "missing|invalid_format|valid_format|verified_reachable",
     "osint_digital_footprint": "none|low|medium|high",
     "evidence": ["string", "..."]

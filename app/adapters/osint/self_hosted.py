@@ -70,14 +70,21 @@ def _digits_only(phone: str) -> str:
 
 
 def _classify_email_domain(domain: str) -> str:
-    d = domain.lower().strip()
-    if d in _DISPOSABLE_DOMAINS:
-        return "disposable"
-    if d in _FREEMAIL_DOMAINS:
-        return "freemail"
-    if d:
-        return "corporate"
-    return "unknown"
+    """Objective TLD classification for the email domain.
+
+    Delegates to the shared classifier in `app.infrastructure.osint.
+    domain_intel` so the full pipeline (adapter + domain_intel + scorer
+    + prompt) uses one vocabulary:
+      disposable | public_provider | registry_tld | country_tld |
+      generic_tld | missing
+
+    Old subjective labels ("freemail", "corporate_suspected",
+    "corporate_verified") are NOT produced here — the composer still
+    accepts them for back-compat but they're flattened to the neutral
+    equivalents.
+    """
+    from app.infrastructure.osint.domain_intel import classify_domain
+    return classify_domain(domain)
 
 
 class SelfHostedOSINTAdapter(OSINTPort):

@@ -30,11 +30,17 @@ class IdentitySignals(BaseModel):
         "strong",      # gerçek isim + şirket eşleşmesi doğrulanmış
     ]
     email_domain_class: Literal[
-        "missing",
-        "disposable",            # mailinator, 10minutemail, yopmail...
-        "freemail",              # gmail, hotmail, yahoo, yandex...
-        "corporate_suspected",   # başka bir domain (muhtemelen kurumsal ama doğrulanmadı)
-        "corporate_verified",    # OSINT ile doğrulandı (site_count yüksek + .com.tr/.co vb.)
+        "missing",               # email hiç yok
+        "disposable",            # curated blocklist'ten: mailinator, 10minutemail, temp-mail.org, vb. (gerçek fraud sinyali)
+        "public_provider",       # gmail, outlook, yahoo, icloud, yandex, protonmail — NEUTRAL. Türkiye'de en yaygın kullanılan servisler; B2B için negatif sinyal DEĞİL
+        "generic_tld",           # .com/.net/.org vb. genel TLD, public_provider değil (custom domain)
+        "country_tld",           # .com.tr/.co.uk/.de vb. ülke TLD'si — belirli bir pazarda aktif işletme sinyali
+        "registry_tld",          # .gov.tr/.edu.tr/.gov/.edu — resmi kurumsal tescil (objektif doğrulanmış)
+        # Legacy geçiş döneminde eski değerler de Literal'de yer alabilir —
+        # Pydantic validation'ı kırmamak için birkaç deploy cycle tutuluyor
+        "freemail",              # DEPRECATED: public_provider kullan
+        "corporate_suspected",   # DEPRECATED: generic_tld / country_tld kullan
+        "corporate_verified",    # DEPRECATED: registry_tld kullan
     ]
     phone_validity: Literal[
         "missing",

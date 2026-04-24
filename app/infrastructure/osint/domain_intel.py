@@ -31,7 +31,7 @@ import structlog
 from app.infrastructure.osint.disposable_list import (
     disposable_list_size,
     is_disposable,
-    is_freemail,
+    is_public_provider,
 )
 
 log = structlog.get_logger(__name__)
@@ -47,29 +47,52 @@ _COMPOUND_TLD_RE = re.compile(r"\.(com|org|net|edu|gov)\.(\w{2})$")
 
 
 def classify_domain(domain: str) -> str:
-    """Return a coarse bucket for the domain before any network lookup.
+    """Return an objective TLD category for the domain.
 
-    Values:
-        "missing"            — blank / invalid
-        "disposable"         — in the curated blocklist
-        "freemail"           — gmail/hotmail/yandex/etc.
-        "corporate_verified" — .gov.tr / .edu.tr (registry-verified)
-        "corporate_suspected" — .com.tr / any non-freemail TLD with MX
-        "unknown"            — domain looks valid but no stronger signal
+    Values (all objective, none judgmental):
+        "missing"          — empty / invalid string
+        "disposable"       — in the curated throwaway-email blocklist
+                             (genuine fraud signal)
+        "public_provider"  — gmail/outlook/yahoo/yandex/icloud/etc.
+                             FACTUAL not pejorative: most TR consumers
+                             + many SMB buyers use these legitimately
+        "registry_tld"     — .gov(.tr) / .edu(.tr) — registry-tied
+                             affiliation, objectively verifiable
+        "country_tld"      — .com.tr / .co.uk / .de etc. (country ccTLD
+                             or country-scoped generic) with a
+                             non-public-provider label
+        "generic_tld"      — .com / .net / .org etc. with a custom
+                             label (not a known public provider)
     """
     if not domain:
         return "missing"
     d = domain.lower().strip()
     if is_disposable(d):
         return "disposable"
-    if is_freemail(d):
-        return "freemail"
-    if d.endswith(".gov.tr") or d.endswith(".edu.tr") or d.endswith(".gov") or d.endswith(".edu"):
-        return "corporate_verified"
-    # .com.tr / .org.tr / .net.tr are TR commercial; general TLD also
-    # defaults to suspected-corporate when it has an MX record (caller
-    # will upgrade after MX check).
-    return "corporate_suspected"
+    if is_public_provider(d):
+        return "public_provider"
+    if (d.endswith(".gov.tr") or d.endswith(".edu.tr")
+            or d.endswith(".gov") or d.endswith(".edu")):
+        return "registry_tld"
+    # Country-scoped TLDs (ccTLD or .com.tr-style second-level country
+    # indicators). Objective: the domain declares a specific market.
+    country_suffixes = (
+        ".com.tr", ".org.tr", ".net.tr", ".bel.tr", ".k12.tr",
+        ".co.uk", ".ac.uk", ".gov.uk", ".org.uk",
+        ".com.au", ".net.au",
+        ".co.jp", ".co.kr",
+        ".com.de",
+    )
+    if any(d.endswith(s) for s in country_suffixes):
+        return "country_tld"
+    # 2-letter ccTLD at the end (.tr, .de, .fr, .it, .es, .nl, .pl, .ru,
+    # .uk, .au, .ae, .sa, .cy, .gr, etc.) — also a market declaration.
+    parts = d.rsplit(".", 1)
+    if len(parts) == 2 and len(parts[1]) == 2 and parts[1].isalpha():
+        return "country_tld"
+    # Otherwise: generic TLD (.com, .net, .org, .io, .app, etc.) with a
+    # custom label → objective "generic business domain".
+    return "generic_tld"
 
 
 async def mx_check(domain: str) -> dict[str, Any]:
@@ -484,9 +507,14 @@ async def enrich_domain(
         return {"domain_class": "missing"}
     domain = domain.lower().strip()
 
-    # Layer 2 first — very cheap, short-circuits disposable / freemail.
+    # Layer 2 first — very cheap, short-circuits the cases where deep
+    # enrichment wouldn't add signal:
+    # - disposable: known blocklist (fraud/throwaway)
+    # - public_provider: gmail/outlook/etc. — the LLM would just tell
+    #   us "this is gmail" and burn tokens; nothing to research
+    # - missing: empty input
     coarse = classify_domain(domain)
-    if coarse in ("disposable", "freemail", "missing"):
+    if coarse in ("disposable", "public_provider", "missing"):
         return {"domain_class": coarse}
 
     # Owned-client fallback so callers can pass None.
@@ -513,7 +541,14 @@ async def enrich_domain(
         domain_class = coarse
         result: dict[str, Any] = {"domain_class": domain_class, **hints}
 
+        # LLM web lookup fires only for the domains where there's
+        # something to research — registry-tied, country-specific, or
+        # custom generic domains. public_provider + disposable already
+        # short-circuited above.
         if use_llm and llm_client is not None and llm_model and domain_class in (
+            "registry_tld", "country_tld", "generic_tld",
+            # Back-compat: scored leads from before the refactor land
+            # here with the old labels; still enrich them.
             "corporate_verified", "corporate_suspected",
         ):
             llm_out = await enrich_domain_via_llm(

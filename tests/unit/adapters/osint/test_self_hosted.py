@@ -33,11 +33,14 @@ class TestHelperFunctions:
         assert _digits_only(None) == ""
 
     def test_classify_email_domain(self):
-        assert _classify_email_domain("gmail.com") == "freemail"
+        # Objective categorization — no "freemail" stigma, no
+        # "corporate_suspected" guessing. Matches the neutral vocabulary
+        # exposed by domain_intel.classify_domain.
+        assert _classify_email_domain("gmail.com") == "public_provider"
         assert _classify_email_domain("mailinator.com") == "disposable"
-        assert _classify_email_domain("onurinsaat.com.tr") == "corporate"
-        assert _classify_email_domain("GMAIL.COM") == "freemail"
-        assert _classify_email_domain("") == "unknown"
+        assert _classify_email_domain("onurinsaat.com.tr") == "country_tld"
+        assert _classify_email_domain("GMAIL.COM") == "public_provider"
+        assert _classify_email_domain("") == "missing"
 
 
 @pytest.fixture
@@ -93,14 +96,14 @@ class TestSelfHostedOSINTAdapter:
         assert profile.phone.e164 == "+905551234567"
         assert profile.phone.valid is True
         assert profile.email.domain == "onurinsaat.com.tr"
-        assert profile.email.domain_type == "corporate"
+        assert profile.email.domain_type == "country_tld"
         assert profile.email.registered_sites == ["linkedin", "github"]
         assert profile.email.site_count == 2
         assert profile.email.modules_checked == 121
         assert profile.cache_hit is False
         assert profile.elapsed_ms >= 0
         assert any("TR" in n for n in profile.notes)
-        assert any("corporate" in n for n in profile.notes)
+        assert any("country_tld" in n for n in profile.notes)
 
     async def test_us_number_also_works(self, adapter):
         with respx.mock(assert_all_called=False) as mock:
@@ -140,7 +143,7 @@ class TestSelfHostedOSINTAdapter:
         assert profile.phone.country is None
         assert any("phone fetch failed" in n for n in profile.notes)
         assert profile.email.domain == "gmail.com"
-        assert profile.email.domain_type == "freemail"
+        assert profile.email.domain_type == "public_provider"
 
     async def test_holehe_timeout_preserves_phone_signal(self, adapter):
         with respx.mock(assert_all_called=False) as mock:
@@ -162,9 +165,9 @@ class TestSelfHostedOSINTAdapter:
             )
 
         assert profile.phone.country == "TR"
-        # Email classification still works (freemail detected on format alone)
+        # Email classification still works (public_provider detected on format alone)
         assert profile.email.domain == "gmail.com"
-        assert profile.email.domain_type == "freemail"
+        assert profile.email.domain_type == "public_provider"
         assert any("fetch failed" in n.lower() or "timeout" in n.lower() for n in profile.notes)
 
     async def test_both_inputs_none(self, adapter):

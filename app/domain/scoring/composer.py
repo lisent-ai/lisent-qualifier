@@ -38,8 +38,30 @@ _NAME_QUALITY_POINTS = {
     "missing": 0, "random": 0, "weak": 2, "plausible": 4, "strong": 6,
 }
 _EMAIL_DOMAIN_POINTS = {
-    "missing": 0, "disposable": -3, "freemail": 2,
-    "corporate_suspected": 5, "corporate_verified": 8,
+    # Objective buckets (debiased 2026-04-24):
+    # — disposable: known fraud/throwaway signal (blocklist), penalize
+    # — public_provider: gmail/outlook/yandex/… — NEUTRAL baseline.
+    #   Most Turkish consumers + many SMB buyers legitimately use a
+    #   gmail address; penalising it punishes real intent. Lifted to
+    #   match generic_tld so email provider alone doesn't move the
+    #   needle — notes/budget/project signals do.
+    # — generic_tld: custom .com/.net not in public-provider set
+    # — country_tld: .com.tr/.co.uk/.de etc — active in a specific
+    #   market (small positive, objective)
+    # — registry_tld: .gov.tr/.edu.tr/.gov/.edu — registry-tied
+    #   affiliation (objective verified)
+    "missing": 0,
+    "disposable": -3,
+    "public_provider": 3,
+    "generic_tld": 3,
+    "country_tld": 4,
+    "registry_tld": 8,
+    # Legacy enum aliases — mapped to the same neutral weights so
+    # production ensemble output from before the refactor continues
+    # to score on the new scale.
+    "freemail": 3,              # was 2 — lifted to public_provider neutral
+    "corporate_suspected": 3,   # was 5 — flattened; no subjective boost
+    "corporate_verified": 8,    # stays as registry_tld
 }
 _PHONE_VALIDITY_POINTS = {
     "missing": 0, "invalid_format": -2, "valid_format": 2, "verified_reachable": 3,
