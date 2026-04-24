@@ -323,14 +323,19 @@ async def enrich_domain_via_llm(
         # Also: reasoning_effort omitted intentionally. On gpt-oss-120b
         # low reasoning_effort silently skips tool calls (community
         # thread #385). Default (medium) reliably invokes browser_search.
+        # Groq SDK's default client timeout is 5s (tight for chat-streaming
+        # use cases). browser_search tool calls need much more headroom —
+        # the server walks search results + synthesises the reply, which
+        # routinely takes 15-30s end-to-end. Override per-request instead
+        # of bumping the global setting.
         resp = await asyncio.wait_for(
-            llm_client.chat.completions.create(
+            llm_client.with_options(timeout=_LLM_TIMEOUT).chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=[{"type": "browser_search"}],
                 max_tokens=2048,
             ),
-            timeout=_LLM_TIMEOUT,
+            timeout=_LLM_TIMEOUT + 5.0,
         )
     except asyncio.TimeoutError:
         log.warning("domain_intel_llm_timeout", domain=domain)
