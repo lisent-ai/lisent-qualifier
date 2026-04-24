@@ -187,3 +187,31 @@ OSINT_FAILURES_TOTAL = Counter(
     "OSINT upstream failures",
     ["provider", "reason"],  # reason ∈ {timeout, http_error, circuit_open, parse}
 )
+
+
+# ── Phase 9 — output quality + signal depth ─────────────────────────────────
+
+PRESCORE_DIACRITICS_MISSING_TOTAL = Counter(
+    "prescore_diacritics_missing_total",
+    "sales_context fields returned without Turkish diacritics (soft-gate)",
+    ["field"],  # who_they_are | company_or_buyer_profile | recommended_opening
+)
+
+OSINT_PHONE_CARRIER_FILLED_TOTAL = Counter(
+    "osint_phone_carrier_filled_total",
+    "Leads where phone carrier was populated (libphonenumber + phoneinfoga)",
+)
+
+OSINT_DOMAIN_INTEL_LAYER_TOTAL = Counter(
+    "osint_domain_intel_layer_total",
+    "Domain-intelligence layer invocations",
+    # layer ∈ {mx, whois, crt_sh, llm_search}
+    # outcome ∈ {hit, miss, error, skipped}
+    ["layer", "outcome"],
+)
+
+INTAKE_QUALITY_FLAG_TOTAL = Counter(
+    "intake_quality_flag_total",
+    "Quality flags stamped on incoming leads during intake",
+    ["flag"],
+)

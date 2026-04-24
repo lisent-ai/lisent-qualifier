@@ -273,6 +273,8 @@ class PreScoreService:
         """DB row'dan LLM'in göreceği flat form dict'i oluştur."""
         notes = ""
         extra = lead_row.get("extra_data") or {}
+        flags: list[str] = []
+        mapping_conf: float | None = None
         if isinstance(extra, dict):
             notes = extra.get("notes") or extra.get("note") or ""
             if not notes:
@@ -280,7 +282,14 @@ class PreScoreService:
                 raw = lead_row.get("raw_payload") or {}
                 if isinstance(raw, dict):
                     notes = raw.get("notes") or raw.get("message") or raw.get("note") or ""
-        return {
+            # Phase 9.4 — surface intake-hygiene signals into the prompt.
+            raw_flags = extra.get("quality_flags")
+            if isinstance(raw_flags, list):
+                flags = [str(f) for f in raw_flags if isinstance(f, str)]
+            mc = extra.get("mapping_confidence")
+            if isinstance(mc, (int, float)):
+                mapping_conf = float(mc)
+        form: dict[str, Any] = {
             "name": lead_row.get("name") or "",
             "email": lead_row.get("email") or "",
             "phone": lead_row.get("phone") or "",
@@ -290,6 +299,11 @@ class PreScoreService:
             "budget_range": lead_row.get("budget_range") or "",
             "notes": notes,
         }
+        if flags:
+            form["intake_quality_flags"] = flags
+        if mapping_conf is not None:
+            form["mapping_confidence"] = round(mapping_conf, 3)
+        return form
 
     async def _run_osint(
         self,

@@ -242,3 +242,13 @@ class FieldMappingResult(BaseModel):
     notes: str = ""
     external_id: str = ""
     extra_fields: dict[str, Any] = Field(default_factory=dict)
+    # Phase 9.4 — intake hygiene
+    # How confident the mapper is that the payload's fields were identified
+    # correctly. Heuristic path computes from field-filled count; LLM path
+    # accepts an explicit confidence in the JSON response if supplied.
+    mapping_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    # Human-readable flags discovered during intake (low confidence,
+    # duplicate phone, payload suspicious, etc.). Propagated into
+    # qualifier_leads.extra_data and then into the scoring prompt so
+    # sales_context can warn the caller.
+    quality_flags: list[str] = Field(default_factory=list)

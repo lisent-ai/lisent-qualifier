@@ -377,7 +377,44 @@ async def map_fields(payload: dict[str, Any]) -> FieldMappingResult:
         log.info("field_mapping_llm",
                  name=bool(llm_result.full_name),
                  phone=bool(llm_result.phone))
+        _attach_confidence_and_flags(llm_result)
         return llm_result
     except Exception as exc:
         log.warning("field_mapping_llm_failed_using_heuristic", error=str(exc))
-        return heuristic_map(payload)
+        heur = heuristic_map(payload)
+        _attach_confidence_and_flags(heur)
+        return heur
+
+
+def _attach_confidence_and_flags(r: FieldMappingResult) -> None:
+    """Phase 9.4 — stamp mapping_confidence + quality_flags onto the result.
+
+    Heuristic: count how many critical fields (name, phone, email,
+    project_type, budget_range) the mapper filled. More filled = higher
+    confidence. Low confidence triggers a low_mapping_confidence flag so
+    the downstream prompt can surface the uncertainty.
+
+    Mutates in-place — FieldMappingResult is a Pydantic BaseModel; we
+    only touch the two Phase-9-added fields.
+    """
+    critical_filled = sum([
+        bool(r.full_name),
+        bool(r.phone),
+        bool(r.email),
+        bool(r.project_type),
+        bool(r.budget_range),
+    ])
+    # LLM path may have set a confidence via its own self-report; only
+    # stomp it when the default (1.0) suggests no signal was provided.
+    if r.mapping_confidence == 1.0:
+        if critical_filled >= 4:
+            r.mapping_confidence = 0.95
+        elif critical_filled >= 2:
+            r.mapping_confidence = 0.6
+        elif critical_filled == 1:
+            r.mapping_confidence = 0.3
+        else:
+            r.mapping_confidence = 0.1
+
+    if r.mapping_confidence < 0.3 and "low_mapping_confidence" not in r.quality_flags:
+        r.quality_flags.append("low_mapping_confidence")

@@ -74,9 +74,12 @@ def classify_domain(domain: str) -> str:
 
 async def mx_check(domain: str) -> dict[str, Any]:
     """Return {mx_valid, mx_host} using dnspython."""
+    outcome = "error"
+    result: dict[str, Any] = {}
     try:
         import dns.resolver  # type: ignore[import-untyped]
     except ImportError:
+        _layer_metric("mx", "skipped")
         return {}
     try:
         loop = asyncio.get_running_loop()
@@ -84,17 +87,30 @@ async def mx_check(domain: str) -> dict[str, Any]:
             None,
             lambda: list(dns.resolver.resolve(domain, "MX", lifetime=_DNS_TIMEOUT)),
         )
+        if records:
+            records.sort(key=lambda r: getattr(r, "preference", 0))
+            result = {
+                "mx_valid": True,
+                "mx_host": str(records[0].exchange).rstrip("."),
+            }
+            outcome = "hit"
+        else:
+            result = {"mx_valid": False}
+            outcome = "miss"
     except Exception as exc:  # noqa: BLE001
         log.debug("mx_check_failed", domain=domain, error=str(exc))
-        return {"mx_valid": False}
-    if not records:
-        return {"mx_valid": False}
-    # Prefer the lowest-preference MX host
-    records.sort(key=lambda r: getattr(r, "preference", 0))
-    return {
-        "mx_valid": True,
-        "mx_host": str(records[0].exchange).rstrip("."),
-    }
+        result = {"mx_valid": False}
+        outcome = "error"
+    _layer_metric("mx", outcome)
+    return result
+
+
+def _layer_metric(layer: str, outcome: str) -> None:
+    try:
+        from app.metrics import OSINT_DOMAIN_INTEL_LAYER_TOTAL
+        OSINT_DOMAIN_INTEL_LAYER_TOTAL.labels(layer=layer, outcome=outcome).inc()
+    except ImportError:
+        pass
 
 
 async def whois_lookup(domain: str) -> dict[str, Any]:
@@ -102,6 +118,7 @@ async def whois_lookup(domain: str) -> dict[str, Any]:
     try:
         import whois  # type: ignore[import-untyped]
     except ImportError:
+        _layer_metric("whois", "skipped")
         return {}
     try:
         loop = asyncio.get_running_loop()
@@ -111,6 +128,7 @@ async def whois_lookup(domain: str) -> dict[str, Any]:
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("whois_lookup_failed", domain=domain, error=str(exc))
+        _layer_metric("whois", "error")
         return {}
 
     def _first(v: Any) -> Any:
@@ -137,6 +155,7 @@ async def whois_lookup(domain: str) -> dict[str, Any]:
     if org:
         out["whois_org"] = str(org)
 
+    _layer_metric("whois", "hit" if out else "miss")
     return out
 
 
@@ -152,14 +171,18 @@ async def crt_sh_lookup(domain: str, client: httpx.AsyncClient) -> dict[str, Any
         resp = await client.get(url, timeout=_CRT_SH_TIMEOUT)
     except (httpx.TimeoutException, httpx.HTTPError) as exc:
         log.debug("crt_sh_failed", domain=domain, error=str(exc))
+        _layer_metric("crt_sh", "error")
         return {}
     if resp.status_code != 200:
+        _layer_metric("crt_sh", "error")
         return {}
     try:
         certs = resp.json()
     except ValueError:
+        _layer_metric("crt_sh", "error")
         return {}
     if not isinstance(certs, list) or not certs:
+        _layer_metric("crt_sh", "miss")
         return {"ssl_cert_count": 0}
 
     # Scan up to 10 most recent certs for a plausible org name.
@@ -175,8 +198,10 @@ async def crt_sh_lookup(domain: str, client: httpx.AsyncClient) -> dict[str, Any
             "amazon", "zerossl",
         )):
             continue
+        _layer_metric("crt_sh", "hit")
         return {"ssl_cert_org": org, "ssl_cert_count": len(certs)}
 
+    _layer_metric("crt_sh", "miss")
     return {"ssl_cert_count": len(certs)}
 
 
@@ -245,6 +270,7 @@ async def enrich_domain_via_llm(
         )
     except asyncio.TimeoutError:
         log.warning("domain_intel_llm_timeout", domain=domain)
+        _layer_metric("llm_search", "error")
         return {}
     except Exception as exc:  # noqa: BLE001
         log.warning(
@@ -252,18 +278,26 @@ async def enrich_domain_via_llm(
             domain=domain,
             error=f"{type(exc).__name__}: {exc}",
         )
+        _layer_metric("llm_search", "error")
         return {}
 
     content = (resp.choices[0].message.content or "").strip()
     if not content:
+        _layer_metric("llm_search", "miss")
         return {}
     try:
         data = json.loads(content)
     except json.JSONDecodeError as exc:
         log.warning("domain_intel_llm_bad_json", domain=domain, error=str(exc))
+        _layer_metric("llm_search", "error")
         return {}
     if not isinstance(data, dict):
+        _layer_metric("llm_search", "miss")
         return {}
+    _layer_metric(
+        "llm_search",
+        "hit" if data.get("company_name") else "miss",
+    )
     # Only surface the fields we actually consume downstream.
     return {
         "organization_name": data.get("company_name") or None,

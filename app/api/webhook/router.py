@@ -68,6 +68,34 @@ async def receive_lead(
     # ── 3. Field mapping (heuristic + LLM fallback) ─────────────────────────
     mapping = await map_fields(raw_payload)
 
+    # Phase 9.4 — duplicate-phone detection. Rolling 1-hour per-company
+    # counter; 5+ leads with the same phone digits in the window triggers
+    # a suspicious_duplicate_phone flag that the scoring prompt turns into
+    # a risks_to_watch note. Catches broken CRM field-mappers / bulk
+    # scrapers that stamp the same default phone on every lead.
+    phone_digits = "".join(c for c in (mapping.phone or "") if c.isdigit())
+    if phone_digits:
+        try:
+            import time as _time
+            from app.infrastructure.redis.client import get_redis
+            redis = get_redis()
+            window_hour = int(_time.time() // 3600)
+            key = f"intake:dup_phone:{company_id}:{phone_digits}:{window_hour}"
+            count = await redis.incr(key)
+            await redis.expire(key, 3600)
+            if count > 5:
+                if "suspicious_duplicate_phone" not in mapping.quality_flags:
+                    mapping.quality_flags.append("suspicious_duplicate_phone")
+                log.warning(
+                    "intake_duplicate_phone",
+                    company_id=company_id,
+                    phone_tail=phone_digits[-4:],
+                    count=int(count),
+                )
+        except Exception as exc:
+            # Redis hiccups must never block intake.
+            log.debug("intake_duplicate_phone_counter_failed", error=str(exc))
+
     lead_id = mapping.external_id or raw_payload.get("lead_id") or str(uuid.uuid4())
     lead_data = {
         "name": mapping.full_name,
@@ -161,6 +189,18 @@ async def receive_lead(
         extra_data["fallback_url"] = fallback_url
     if mapping.notes:
         extra_data.setdefault("notes", mapping.notes)
+    # Phase 9.4 — carry intake-hygiene signals into the JSONB so worker
+    # + scoring prompt can surface them.
+    if mapping.quality_flags:
+        extra_data["quality_flags"] = list(mapping.quality_flags)
+        try:
+            from app.metrics import INTAKE_QUALITY_FLAG_TOTAL
+            for _flag in mapping.quality_flags:
+                INTAKE_QUALITY_FLAG_TOTAL.labels(flag=_flag).inc()
+        except ImportError:
+            pass
+    if mapping.mapping_confidence < 1.0:
+        extra_data["mapping_confidence"] = round(mapping.mapping_confidence, 3)
 
     pool = get_db_pool()
     try:

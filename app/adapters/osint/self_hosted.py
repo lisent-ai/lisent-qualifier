@@ -212,6 +212,11 @@ class SelfHostedOSINTAdapter(OSINTPort):
             notes.append("phone: could not determine country")
         if signals.carrier:
             notes.append(f"phone carrier={signals.carrier}")
+            try:
+                from app.metrics import OSINT_PHONE_CARRIER_FILLED_TOTAL
+                OSINT_PHONE_CARRIER_FILLED_TOTAL.inc()
+            except ImportError:
+                pass
         if signals.line_type and signals.line_type != "unknown":
             notes.append(f"phone line_type={signals.line_type}")
         return signals, notes
