@@ -1,15 +1,17 @@
 """Pre-score judge client — Groq-based single-persona extraction.
 
-Phase 2. Mirrors `qualification_judge_client.py` structure. Difference: bu
-judge chat-öncesi intake'te çalışır (conversation_history yok), lead form +
-OSINT profile + persona'ya bağlı system prompt alır.
+Phase 5 multilingual: ONE EN-source template + runtime language injection.
+Modern multilingual LLMs handle 15 locales with the same calibrated prompt;
+the system prompt's "Output Language" block tells the model to respond in the
+lead's language. ``language`` parameter flows from worker → service →
+ensemble → here.
 
-Ensemble orchestrator (app/application/scoring/pre_score_ensemble.py) bu
-modülün `run_pre_score_persona()` fonksiyonunu 3 paralel persona ile çağırır
-(asyncio.gather) ve median + aggregation yapar.
+Ensemble orchestrator (app/application/scoring/pre_score_ensemble.py) calls
+``run_pre_score_persona()`` for 3 personas in parallel (asyncio.gather) and
+performs median + aggregation.
 
 Response parsing: 3-tier fallback — direct JSON → ```json code block → first
-{...} block. Pydantic validation zorunlu.
+{...} block. Pydantic validation is mandatory.
 """
 
 from __future__ import annotations
@@ -31,14 +33,8 @@ from tenacity import (
 )
 
 from app.config import get_settings
-from app.domain.conversation.templates.tr.pre_score_judge import (
-    FEW_SHOTS_TR_CONSTRUCTION,
-    OUTPUT_SCHEMA_EXAMPLE,
-    PERSONA_LABELS,
-    PERSONA_TEMPERATURES,
-    PRE_SCORE_JUDGE_SYSTEM_TEMPLATE,
-    PRE_SCORE_JUDGE_USER_TEMPLATE,
-)
+from app.domain.conversation.i18n import normalize_language, resolve_language
+from app.domain.conversation.templates.registry import TemplateRegistry
 from app.domain.scoring.pre_score_judgment import PreScoreJudgmentResult
 
 log = structlog.get_logger(__name__)
@@ -58,22 +54,28 @@ def _build_messages(
     osint_json: dict[str, Any],
     ideal_customer_profile: str,
     sector: str,
+    language: str,
 ) -> list[dict[str, str]]:
-    """Assemble system + user messages for one persona."""
-    persona_text = PERSONA_LABELS[persona]
+    """Assemble system + user messages for one persona in the lead's language."""
+    templates = TemplateRegistry.get_pre_score_templates(language=language, sector=sector)
+    persona_text = templates.persona_labels[persona]
+    bcp47, language_name = resolve_language(language)
+
     icp = ideal_customer_profile or (
-        "(ICP tanımlanmamış — genel inşaat/gayrimenkul kabul et)"
+        "(ICP not defined — assume general construction/real-estate buyer)"
     )
-    system_prompt = PRE_SCORE_JUDGE_SYSTEM_TEMPLATE.format(
+    system_prompt = templates.system_template.format(
         persona=persona_text,
         ideal_customer_profile=icp,
         sector=sector,
+        language_name=language_name,
+        language_code=bcp47,
     )
-    user_prompt = PRE_SCORE_JUDGE_USER_TEMPLATE.format(
+    user_prompt = templates.user_template.format(
         lead_json=json.dumps(lead_json, ensure_ascii=False, indent=2),
         osint_json=json.dumps(osint_json, ensure_ascii=False, indent=2),
-        few_shots_block=FEW_SHOTS_TR_CONSTRUCTION,
-        output_schema=OUTPUT_SCHEMA_EXAMPLE,
+        few_shots_block=templates.few_shots_block,
+        output_schema=templates.output_schema,
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -82,12 +84,7 @@ def _build_messages(
 
 
 def _parse_judgment(text: str) -> PreScoreJudgmentResult:
-    """3-tier JSON extraction + Pydantic validation.
-
-    1. Direct json.loads
-    2. Markdown code block extraction
-    3. First brace-block substring
-    """
+    """3-tier JSON extraction + Pydantic validation."""
     errors: list[str] = []
 
     try:
@@ -126,15 +123,8 @@ def _parse_judgment(text: str) -> PreScoreJudgmentResult:
 
 
 @circuit(
-    # Tolerate bursts: 3 personas × several concurrent leads can legitimately
-    # hit a rate-limit window without the Groq upstream being sick. A higher
-    # threshold + shorter recovery rides through reset cycles.
     failure_threshold=15,
     recovery_timeout=20,
-    # Only treat *Groq API* failures as circuit signals. RuntimeError from
-    # the rate limiter is situational (TPM window saturated) — if every
-    # throttled call tripped the breaker, a small burst would knock the
-    # whole pipeline out for a minute.
     expected_exception=(APIStatusError, APITimeoutError),
 )
 @retry(
@@ -150,25 +140,27 @@ async def run_pre_score_persona(
     osint_json: dict[str, Any],
     ideal_customer_profile: str = "",
     sector: str = "construction",
+    language: str = "en",
     model_override: str | None = None,
     max_tokens_override: int | None = None,
     timeout_override: float | None = None,
 ) -> PreScoreJudgmentResult:
-    """Tek bir persona için Groq call + parse.
+    """Run a single persona's Groq call + parse, in the lead's language.
 
     Args:
         persona: "skeptic" | "neutral" | "opportunity"
-        lead_json: form verisi (name, email, phone, city, notes, ...)
-        osint_json: OSINTProfile.to_dict() çıktısı
-        ideal_customer_profile: tenant.config'den ICP metni (Türkçe)
-        sector: "construction" | "real_estate" (tenant tarafından set edilir)
+        lead_json: form data (name, email, phone, city, notes, ...)
+        osint_json: OSINTProfile.to_dict() output
+        ideal_customer_profile: tenant.config ICP text
+        sector: "construction" | "real_estate" (set by tenant)
+        language: BCP-47 short code, e.g. "tr", "en", "de" — falls back to "en"
 
     Returns:
         PreScoreJudgmentResult — Pydantic validated.
 
     Raises:
-        ValueError — parse edilemedi (malformed LLM response)
-        APIStatusError / APITimeoutError — circuit breaker tarafından yakalanır
+        ValueError — parse failed (malformed LLM response)
+        APIStatusError / APITimeoutError — caught by circuit breaker
     """
     settings = get_settings()
     client = _get_judge_client()
@@ -176,7 +168,11 @@ async def run_pre_score_persona(
     max_tokens = max_tokens_override or getattr(
         settings, "pre_score_judge_max_tokens", 2048,
     )
-    temperature = PERSONA_TEMPERATURES[persona]
+    resolved_language = normalize_language(language)
+    templates = TemplateRegistry.get_pre_score_templates(
+        language=resolved_language, sector=sector,
+    )
+    temperature = templates.persona_temperatures[persona]
 
     messages = _build_messages(
         persona=persona,
@@ -184,20 +180,13 @@ async def run_pre_score_persona(
         osint_json=osint_json,
         ideal_customer_profile=ideal_customer_profile,
         sector=sector,
+        language=resolved_language,
     )
 
-    # Rate limit acquire — priority="prescore" chat judge'den düşük öncelikli
     from app.infrastructure.llm.groq_rate_limiter import acquire
     if not await acquire(estimated_tokens=5000, priority="prescore"):
         raise RuntimeError("Groq rate limit — pre-score judge throttled")
 
-    # gpt-oss-120b burns tokens on internal reasoning before emitting the
-    # structured JSON. With reasoning_effort default the 2048-token budget
-    # often overflows before `sales_context` / `intent` / `fit` fields get
-    # written, producing partial JSON that fails Pydantic validation.
-    # Forcing reasoning_effort="low" cuts the CoT pre-roll so the model
-    # spends the budget on the output schema. Only applies to gpt-oss-* /
-    # compound models; llama-3.3 ignores the field silently.
     extra_kwargs: dict[str, Any] = {}
     if "gpt-oss" in model or "compound" in model:
         extra_kwargs["reasoning_effort"] = "low"
@@ -216,17 +205,14 @@ async def run_pre_score_persona(
         content = response.choices[0].message.content or ""
         result = _parse_judgment(content)
 
-        # Soft diacritics check — log + metric only, no retry. Some Groq
-        # models under low temperature strip Turkish diacritics ("sehir"
-        # instead of "şehir") which reads amateurish in the CRM panel.
-        # We surface this as observability so we can track % over time;
-        # retrying would double-spend Groq tokens for marginal gain.
-        _check_diacritics(persona, result)
+        if resolved_language == "tr":
+            _check_diacritics(persona, result)
 
         elapsed = time.monotonic() - start
         log.info(
             "pre_score_persona_completed",
             persona=persona,
+            language=resolved_language,
             direct_score=result.direct_score,
             extraction_confidence=result.extraction_confidence,
             elapsed_s=round(elapsed, 2),
@@ -238,6 +224,7 @@ async def run_pre_score_persona(
         log.warning(
             "pre_score_persona_failed",
             persona=persona,
+            language=resolved_language,
             error=str(exc),
             elapsed_s=round(elapsed, 2),
         )
@@ -248,10 +235,9 @@ _TR_DIACRITICS: frozenset[str] = frozenset("çşğıİüöÇŞĞÜÖ")
 
 
 def _check_diacritics(persona: str, result: PreScoreJudgmentResult) -> None:
-    """Warn + metric when sales_context Turkish fields come back stripped of
-    diacritics. 100-char floor avoids false positives on short English-like
-    segments; any one Turkish diacritic anywhere proves the model produced
-    proper Turkish."""
+    """TR-only soft check — warn + metric when Turkish fields come back stripped
+    of diacritics. Other locales (EN/DE/FR/etc.) skip this gate via the caller.
+    """
     sc = result.sales_context
     for field_name, txt in (
         ("who_they_are", sc.who_they_are or ""),
@@ -272,5 +258,4 @@ def _check_diacritics(persona: str, result: PreScoreJudgmentResult) -> None:
             from app.metrics import PRESCORE_DIACRITICS_MISSING_TOTAL
             PRESCORE_DIACRITICS_MISSING_TOTAL.labels(field=field_name).inc()
         except (ImportError, AttributeError):
-            # Counter not wired yet (Track 5.A); swallow silently.
             pass

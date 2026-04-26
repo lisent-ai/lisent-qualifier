@@ -52,6 +52,15 @@ class LeadCreateRequest(BaseModel):
     budget_range: str | None = Field(None, max_length=50)
     notes: str | None = None
     extra_data: dict[str, Any] | None = None
+    language: str | None = Field(
+        None,
+        max_length=8,
+        description=(
+            "Optional BCP-47 short code (e.g. 'tr', 'en', 'de'). Drives the "
+            "qualifier's sales_context output language. Falls back to "
+            "tenant.config.language → 'en' when omitted."
+        ),
+    )
 
 
 class LeadResponse(BaseModel):
@@ -145,6 +154,9 @@ async def create_lead(
     extra = dict(body.extra_data or {})
     if body.notes:
         extra["notes"] = body.notes
+    if body.language:
+        from app.domain.conversation.i18n import normalize_language
+        extra["language"] = normalize_language(body.language)
 
     pool = get_db_pool()
     async with pool.acquire() as conn:

@@ -89,6 +89,7 @@ class CRMInternalWebhookClient:
         threshold: int,
         path: str,
         payload: dict[str, Any],
+        language: str = "en",
         event_id: str | None = None,
         timestamp_iso: str | None = None,
     ) -> bool:
@@ -97,6 +98,9 @@ class CRMInternalWebhookClient:
         Args:
             crm_lead_id: target Lead.id on the CRM side — required. Empty
                 string → we silently skip (no CRM mirror yet).
+            language: BCP-47 short code carried as additive metadata so the
+                CRM consumer can render sales_context in the right locale.
+                Defaults to "en"; HMAC re-signs deterministically.
         """
         if not self.enabled():
             return False
@@ -114,6 +118,7 @@ class CRMInternalWebhookClient:
             "score": int(score),
             "threshold": int(threshold),
             "path": path,
+            "language": language,
             "timestamp": timestamp_iso or "",
             "payload": payload,
         }

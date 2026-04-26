@@ -176,7 +176,7 @@ class PreScoreWorker:
             return  # malformed — drop silently, can't retry sensibly
 
         try:
-            icp, sector, threshold = await self._resolve_tenant(self._pool, tenant_id)
+            resolved = await self._resolve_tenant(self._pool, tenant_id)
         except Exception as exc:
             log.warning(
                 "prescore_tenant_resolve_failed",
@@ -185,6 +185,15 @@ class PreScoreWorker:
             )
             await self._handle_failure(job, attempt, reason=f"tenant_resolve: {exc}")
             return
+
+        # Backward-compatible unpacking: legacy resolvers return 3-tuple
+        # (icp, sector, threshold); Phase 5 default returns 4-tuple with
+        # `language` appended. Service handles None language → "en".
+        if len(resolved) == 4:
+            icp, sector, threshold, language = resolved
+        else:
+            icp, sector, threshold = resolved
+            language = None
 
         try:
             async with self._pool.acquire() as conn:
@@ -199,6 +208,7 @@ class PreScoreWorker:
                     conn=conn,
                     ideal_customer_profile=icp,
                     sector=sector,
+                    language=language,
                     qualification_threshold=threshold,
                     attempt=attempt,
                     # On the last retry slot, collapse ensemble failure to
@@ -442,11 +452,14 @@ class PreScoreWorker:
 async def _default_tenant_resolver(
     pool: asyncpg.Pool,
     tenant_id: UUID,
-) -> tuple[str, str, int]:
-    """Fallback resolver: tenants.config'den ICP + sector + threshold oku.
+) -> tuple[str, str, int, str]:
+    """Fallback resolver: tenants.config'den ICP + sector + threshold + language oku.
 
     Production'da DI ile TenantPort adapter'ı kullanılması tercih edilir;
     bu çok temel fallback — gerçek tenant resolution cache'lenmeli.
+
+    Phase 5: returns a 4-tuple with ``language`` appended. The worker accepts
+    legacy 3-tuple resolvers transparently for backward-compat.
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -458,11 +471,13 @@ async def _default_tenant_resolver(
             str(tenant_id),
         )
     if row is None:
-        return "", "construction", 75
+        return "", "construction", 75, "en"
     config = row["config"] or {}
     if isinstance(config, str):
         config = json.loads(config)
     icp = config.get("ideal_customer_profile") or ""
     sector = config.get("industry_focus") or "construction"
     threshold = int(config.get("qualification_threshold") or 75)
-    return icp, sector, threshold
+    raw_language = config.get("language") or "en"
+    language = str(raw_language).lower().strip() or "en"
+    return icp, sector, threshold, language

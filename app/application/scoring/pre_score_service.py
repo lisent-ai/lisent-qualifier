@@ -105,6 +105,7 @@ class PreScoreService:
         conn: asyncpg.Connection,
         ideal_customer_profile: str = "",
         sector: str = "construction",
+        language: str | None = None,
         qualification_threshold: int = 75,
         attempt: int = 0,
         is_final_attempt: bool = False,
@@ -129,6 +130,20 @@ class PreScoreService:
 
         form = self._extract_form(lead_row)
         osint_profile = await self._run_osint(tenant_id, form)
+
+        # Resolve language: explicit param > lead.extra_data.language > "en"
+        extra_data = lead_row.get("extra_data") or {}
+        if isinstance(extra_data, str):
+            try:
+                import json as _json
+                extra_data = _json.loads(extra_data)
+            except (ValueError, TypeError):
+                extra_data = {}
+        from app.domain.conversation.i18n import normalize_language
+        resolved_language = normalize_language(
+            language
+            or (extra_data.get("language") if isinstance(extra_data, dict) else None),
+        )
 
         # Phase 9.5.A — count carrier population on every lead the service
         # scores (fresh fetch OR cache hit). Placing it here instead of
@@ -155,6 +170,7 @@ class PreScoreService:
                 osint_json=osint_profile.to_dict(),
                 ideal_customer_profile=ideal_customer_profile,
                 sector=sector,
+                language=resolved_language,
                 divergence_threshold=self._divergence_threshold,
             )
             final_score = ensemble.median_direct_score
