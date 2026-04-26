@@ -141,11 +141,12 @@ class RiskSignals(BaseModel):
 
 
 class SalesContext(BaseModel):
-    """Satış ekibine ilk arama için Türkçe hazırlıklı bağlam.
+    """Satış ekibine ilk arama için hazırlıklı bağlam (her zaman İngilizce).
 
     Bu alanlar LLM tarafından üretilen NARRATIF içeriktir — enum değil.
     Skora doğrudan katkısı yok ama glass-box panel'de + outbound webhook
-    payload'ında satış ekibine gider.
+    payload'ında satış ekibine gider. CRM frontend gerekirse sales rep'in
+    tercih ettiği dile çevirir.
     """
 
     who_they_are: str = Field(max_length=300)

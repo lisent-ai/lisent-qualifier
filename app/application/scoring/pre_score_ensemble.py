@@ -317,7 +317,6 @@ async def run_pre_score_ensemble(
     osint_json: dict[str, Any],
     ideal_customer_profile: str = "",
     sector: str = "construction",
-    language: str = "en",
     personas: tuple[PersonaName, ...] = DEFAULT_PERSONAS,
     divergence_threshold: int = 20,
 ) -> EnsembleResult:
@@ -326,8 +325,7 @@ async def run_pre_score_ensemble(
     Fail-tolerant: 1 veya 2 persona fail ederse kalanlardan aggregation yapılır.
     3'ü de fail ederse exception.
 
-    ``language`` (BCP-47 short code, e.g. "tr", "en", "de") is forwarded to
-    every persona — the LLM produces ``sales_context`` in that language.
+    Output is always English; sales-side translation lives in the CRM frontend.
     """
     import time
     started = time.monotonic()
@@ -340,7 +338,6 @@ async def run_pre_score_ensemble(
                 osint_json=osint_json,
                 ideal_customer_profile=ideal_customer_profile,
                 sector=sector,
-                language=language,
             ),
             name=f"prescore-{p}",
         )

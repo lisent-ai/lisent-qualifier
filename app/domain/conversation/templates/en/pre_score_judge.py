@@ -1,21 +1,15 @@
 # ruff: noqa: E501
 """English pre-score judge prompt templates + 3 persona variants + few-shots.
 
-This is the SINGLE SOURCE template for all 15 supported languages. The system
-prompt carries a `{language_name}` / `{language_code}` placeholder; runtime
-injection asks the LLM to respond in the lead's language. Modern multilingual
-LLMs (Groq gpt-oss-120b, Claude 4.x) handle this with one prompt set instead
-of 15 native template forks.
+The qualifier always produces English output. Sales-side translation (per
+sales-rep locale) lives in the CRM frontend, not in the prompt.
 
 Usage (pre_score_judge_client.py):
 
-    bcp47, display = resolve_language(language)
     system_prompt = PRE_SCORE_JUDGE_SYSTEM_TEMPLATE.format(
         persona=PERSONA_SKEPTIC_EN,
         ideal_customer_profile=tenant_icp,
         sector=tenant_sector,
-        language_name=display,
-        language_code=bcp47,
     )
     user_prompt = PRE_SCORE_JUDGE_USER_TEMPLATE.format(
         lead_json=...,
@@ -98,8 +92,8 @@ of thought) and filling all fields, assign a 0-100 score.
 
 - **Field order matters**: first `thinking` (internal reasoning), then \
 `identity` / `intent` / `fit` / `risk` (extraction), then `sales_context` \
-(localized narrative — see Output Language below), and FINALLY `direct_score` \
-and `extraction_confidence`. This order reduces anchoring bias.
+(narrative for sales), and FINALLY `direct_score` and \
+`extraction_confidence`. This order reduces anchoring bias.
 - **No fabrication**: if you cannot back a signal with evidence, use \
 "missing" / "absent" / "unknown" enums.
 - **Stick to ENUM values**: never invent new categories or alter the literal \
@@ -112,27 +106,20 @@ patterns.
 
 ## Output Language
 
-**Respond in {language_name} ({language_code}).**
-
-The narrative fields under `sales_context` (who_they_are, \
-company_or_buyer_profile, recommended_opening, risks_to_watch entries, \
-key_questions_for_call entries) MUST be written in that language with natural, \
-professional sales tone idiomatic to it.
+**Respond in English.** All narrative fields under `sales_context` \
+(who_they_are, company_or_buyer_profile, recommended_opening, risks_to_watch \
+entries, key_questions_for_call entries) MUST be written in clear, \
+professional English.
 
 Preserve untranslated:
-- Industry technical terms when they are the standard form (RFP, GMP, LEED, \
-BIM, GC, RFI, BOQ, design-build).
 - Proper names: people, companies, products, brands.
 - Numbers, currency amounts, dates, addresses, phone numbers, email addresses.
 
-Use that language's correct typography (diacritics for Turkish/French/German, \
-right-to-left layout for Arabic, etc.). Sloppy or anglicized output looks \
-amateurish to a native sales operator.
-
-The `thinking` field can stay in English (internal reasoning).
-The `evidence` array entries quote raw form/OSINT values — keep them verbatim.
-ENUM values (e.g. "ideal_match", "actively_evaluating") are universal — never \
-translate them.
+`evidence` array entries quote raw form/OSINT values — keep them verbatim \
+even when the source text is in another language (do not translate the \
+quoted snippet).
+ENUM values (e.g. "ideal_match", "actively_evaluating") are fixed strings — \
+never translate them.
 
 ## email_domain_class classification rules
 
@@ -194,8 +181,7 @@ extraction_confidence. JSON missing any field is invalid.
 If a category has no data, fill its enums with "missing" / "absent" / \
 "unknown" — but never drop the field itself. Skipping `sales_context` is a \
 common error; even when the form is empty, write \
-`sales_context.who_they_are = "Insufficient signal — discovery call required"` \
-(in the requested output language).
+`sales_context.who_they_are = "Insufficient signal — discovery call required"`.
 """
 
 
@@ -590,9 +576,9 @@ OUTPUT_SCHEMA_EXAMPLE = """{
     "evidence": ["string", "..."]
   },
   "sales_context": {
-    "who_they_are": "string (1-2 sentences in target language)",
-    "company_or_buyer_profile": "string (target language)",
-    "recommended_opening": "string (first-call opening line, target language)",
+    "who_they_are": "string (1-2 sentences, English)",
+    "company_or_buyer_profile": "string (English)",
+    "recommended_opening": "string (first-call opening line, English)",
     "risks_to_watch": ["string", "..."],
     "key_questions_for_call": ["string", "string", "string (2-5 entries; minimum 2 required, ideally 3)"]
   },
