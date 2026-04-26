@@ -66,7 +66,8 @@ class PreScoreWorker:
         service:     PreScoreService — enrichment + scoring + writeback.
         tenant_resolver: Callable[[UUID], Awaitable[(icp, sector, threshold)]]
                          — tenant'ın ICP + sector + qualification_threshold'unu
-                         döndürür. DI ile verilir.
+                         döndürür. DI ile verilir. Legacy 4-tuple resolvers are
+                         tolerated; the trailing `language` element is dropped.
     """
 
     def __init__(
@@ -186,14 +187,15 @@ class PreScoreWorker:
             await self._handle_failure(job, attempt, reason=f"tenant_resolve: {exc}")
             return
 
-        # Backward-compatible unpacking: legacy resolvers return 3-tuple
-        # (icp, sector, threshold); Phase 5 default returns 4-tuple with
-        # `language` appended. Service handles None language → "en".
-        if len(resolved) == 4:
-            icp, sector, threshold, language = resolved
+        # Resolver tuple shape: (icp, sector, threshold). Legacy 4-tuple
+        # resolvers (Phase 5 era — 4th element was `language`) are still
+        # accepted; the trailing field is silently dropped because output
+        # is now always English.
+        if len(resolved) >= 3:
+            icp, sector, threshold = resolved[0], resolved[1], resolved[2]
         else:
-            icp, sector, threshold = resolved
-            language = None
+            log.warning("prescore_resolver_short_tuple", tenant_id=tenant_id_str)
+            return
 
         try:
             async with self._pool.acquire() as conn:
@@ -208,7 +210,6 @@ class PreScoreWorker:
                     conn=conn,
                     ideal_customer_profile=icp,
                     sector=sector,
-                    language=language,
                     qualification_threshold=threshold,
                     attempt=attempt,
                     # On the last retry slot, collapse ensemble failure to
@@ -452,14 +453,15 @@ class PreScoreWorker:
 async def _default_tenant_resolver(
     pool: asyncpg.Pool,
     tenant_id: UUID,
-) -> tuple[str, str, int, str]:
-    """Fallback resolver: tenants.config'den ICP + sector + threshold + language oku.
+) -> tuple[str, str, int]:
+    """Fallback resolver: tenants.config'den ICP + sector + threshold oku.
 
     Production'da DI ile TenantPort adapter'ı kullanılması tercih edilir;
     bu çok temel fallback — gerçek tenant resolution cache'lenmeli.
 
-    Phase 5: returns a 4-tuple with ``language`` appended. The worker accepts
-    legacy 3-tuple resolvers transparently for backward-compat.
+    `tenants.config.language` may still be set by other consumers (chat
+    primary_language fallback) but pre-scoring no longer reads it — the
+    qualifier always emits English.
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -471,13 +473,11 @@ async def _default_tenant_resolver(
             str(tenant_id),
         )
     if row is None:
-        return "", "construction", 75, "en"
+        return "", "construction", 75
     config = row["config"] or {}
     if isinstance(config, str):
         config = json.loads(config)
     icp = config.get("ideal_customer_profile") or ""
     sector = config.get("industry_focus") or "construction"
     threshold = int(config.get("qualification_threshold") or 75)
-    raw_language = config.get("language") or "en"
-    language = str(raw_language).lower().strip() or "en"
-    return icp, sector, threshold, language
+    return icp, sector, threshold

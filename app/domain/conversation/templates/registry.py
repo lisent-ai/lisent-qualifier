@@ -1,11 +1,14 @@
 """
-Template registry — returns the correct prompt templates for a given language.
+Template registry — returns prompt templates for a given language (chat) or
+sector (pre-score).
 
 Usage:
+    # Chat path — multilingual
     templates = TemplateRegistry.get_templates("tr")
     prompt = templates.chat_system
 
-    pre_score = TemplateRegistry.get_pre_score_templates("en", sector="construction")
+    # Pre-score — always English
+    pre_score = TemplateRegistry.get_pre_score_templates(sector="construction")
     system_prompt = pre_score.system_template.format(...)
 """
 from __future__ import annotations
@@ -29,13 +32,10 @@ class PromptTemplateSet:
 
 @dataclass(frozen=True)
 class PreScoreTemplateSet:
-    """Single-source EN templates for the pre-score judge.
+    """English-only templates for the pre-score judge.
 
-    Phase 5 multilingual strategy: ONE prompt set + runtime language injection
-    via ``language_name`` / ``language_code`` placeholders inside
-    ``system_template``. Modern multilingual LLMs (Groq gpt-oss-120b, Claude
-    4.x) handle 15 locales with one calibrated prompt instead of 15 native
-    forks.
+    The qualifier always emits English; sales-side translation (per CRM
+    sales-rep locale) lives in the CRM frontend.
     """
 
     persona_labels: dict[str, str]
@@ -63,17 +63,9 @@ class TemplateRegistry:
 
     @staticmethod
     def get_pre_score_templates(
-        language: str | None = None,
         sector: str = "construction",
     ) -> PreScoreTemplateSet:
-        """Returns the EN single-source pre-score template set.
-
-        ``language`` is accepted for symmetry with the chat templates path but
-        the same EN templates are returned for all locales — runtime injection
-        of ``language_name`` / ``language_code`` is handled by
-        ``pre_score_judge_client._build_messages``.
-        """
-        del language  # noqa: F841 — accepted for API symmetry, ignored here
+        """Returns the English pre-score template set."""
         return _get_en_pre_score_templates(sector)
 
 
