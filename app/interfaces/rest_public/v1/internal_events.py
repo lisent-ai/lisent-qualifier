@@ -136,6 +136,27 @@ async def ingest_lead_stage_changed(
 
     published: list[str] = []
 
+    # CRM may include the partner's upstream identifiers on the lead row;
+    # forward them so the outbound webhook can address the lead by the
+    # external_ref the partner originally sent us. Missing → outbound
+    # adapter drops the event (native CRM lead, no partner to notify).
+    external_id_raw = (
+        body.lead.get("external_id") if isinstance(body.lead, dict) else None
+    )
+    origin_system_raw = (
+        body.lead.get("origin_system") if isinstance(body.lead, dict) else None
+    )
+    external_id = (
+        str(external_id_raw).strip() or None
+        if external_id_raw is not None
+        else None
+    )
+    origin_system = (
+        str(origin_system_raw).strip() or None
+        if origin_system_raw is not None
+        else None
+    )
+
     async def _publish(event_type: str) -> None:
         evt = ScoreEvent(
             tenant_id=tenant_id,
@@ -147,6 +168,8 @@ async def ingest_lead_stage_changed(
             path="crm",
             payload=dict(base_payload),
             timestamp=changed_at,
+            external_id=external_id,
+            origin_system=origin_system,
         )
         await event_port.publish(evt)
         published.append(event_type)

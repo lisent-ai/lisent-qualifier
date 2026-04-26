@@ -22,7 +22,6 @@ import json
 import os
 import time
 import uuid
-from datetime import datetime
 
 import pytest
 
@@ -207,7 +206,7 @@ class TestSigning:
 
 class TestCompositeFanout:
     async def test_publish_reaches_all_adapters(self):
-        from uuid import UUID, uuid4
+        from uuid import uuid4
 
         from app.adapters.event.composite import CompositeEventAdapter
         from app.ports.event import EventPort, ScoreEvent
@@ -260,10 +259,11 @@ class TestWebhookFanoutAdapter:
                 tenant_id=tenant_hook["id"],
                 lead_id=uuid.uuid4(),
                 session_id=None,
-                event_type="score.updated",
+                event_type="lead.qualified",
                 score=88,
                 threshold=75,
-                path="chat",
+                path="crm",
+                external_id="partner-lead-001",
             )
         )
 
@@ -272,8 +272,13 @@ class TestWebhookFanoutAdapter:
         raw = await redis_client.lpop("webhook:queue")
         job = json.loads(raw)
         assert job["tenant_id"] == str(tenant_hook["id"])
-        assert job["event_type"] == "score.updated"
+        assert job["event_type"] == "lead.qualified"
         assert job["attempt"] == 0
+        assert job["event_id"] == "partner-lead-001.lead.qualified"
+        assert json.loads(job["body"]) == {
+            "event_type": "lead.qualified",
+            "external_ref": "partner-lead-001",
+        }
 
     async def test_skips_when_tenant_has_no_webhook(
         self, tenant_no_hook, redis_client
@@ -290,10 +295,11 @@ class TestWebhookFanoutAdapter:
                 tenant_id=tenant_no_hook["id"],
                 lead_id=uuid.uuid4(),
                 session_id=None,
-                event_type="score.updated",
+                event_type="lead.qualified",
                 score=50,
                 threshold=75,
-                path="chat",
+                path="crm",
+                external_id="partner-lead-002",
             )
         )
 

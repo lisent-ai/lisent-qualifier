@@ -1,13 +1,14 @@
-"""Loop-prevention tests: outbound headers + suppression for partner-origin leads.
+"""Outbound webhook fanout — allowlist + minimal-body contract.
 
-Covers the two contract pieces partner integrators rely on:
+Outbound surface is restricted to status milestones (currently just
+`lead.qualified`). Body is fixed: `{event_type, external_ref}`. Every
+other event the qualifier emits (`score.*`, `pre_score.*`, lifecycle,
+`lead.stage_changed`) is dropped at the fanout adapter and never leaves
+the service.
 
-1. `deliver()` extracts `origin_system` / `external_id` from the body and
-   emits them as `X-Lisent-Origin` / `X-Lisent-External-Id` headers so
-   receivers can upsert without parsing the body.
-2. `WebhookFanoutAdapter.publish()` suppresses lifecycle (`lead.*`) events
-   for leads with `origin_system == "partner_intranet"` — these would
-   echo the partner's own data back to them. Scoring events still flow.
+Loop-prevention tests for `deliver()` (header extraction from body) are
+kept — `deliver` is a generic helper that may still see legacy bodies
+during a deploy window or from other publishers.
 """
 
 from __future__ import annotations
@@ -19,11 +20,15 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import httpx
-import pytest
 
-from app.adapters.event.webhook_fanout import WebhookFanoutAdapter
+from app.adapters.event.webhook_fanout import (
+    OUTBOUND_EVENT_ALLOWLIST,
+    WebhookFanoutAdapter,
+)
 from app.application.webhook.delivery import _extract_origin_headers, deliver
 from app.ports.event import ScoreEvent
+
+# ──────────────────────────────────────────────── deliver() header extraction
 
 
 def test_extract_origin_headers_from_top_level():
@@ -54,6 +59,7 @@ def test_extract_origin_headers_handles_garbage_body():
 def _collect_headers(captured: dict):
     def handler(request: httpx.Request) -> httpx.Response:
         captured["headers"] = dict(request.headers)
+        captured["body"] = request.content
         return httpx.Response(200, json={"ok": True})
     return handler
 
@@ -83,7 +89,6 @@ def test_deliver_adds_loop_prevention_headers():
     assert outcome.ok is True
     assert captured["headers"]["x-lisent-origin"] == "partner_intranet"
     assert captured["headers"]["x-lisent-external-id"] == "A-999"
-    # Pre-existing headers still present
     assert "x-lisent-signature" in captured["headers"]
 
 
@@ -106,16 +111,16 @@ def test_deliver_omits_headers_when_body_has_no_origin():
     assert "x-lisent-external-id" not in captured["headers"]
 
 
-# ──────────────────────────────────────────────── fanout loop suppression
+# ──────────────────────────────────────────────── fanout allowlist contract
 
 
-def _make_adapter_with_config():
+def _make_adapter_with_config(enabled_events=None):
     """Adapter wired with an in-memory tenant config cache so publish() skips DB."""
     redis = MagicMock()
     redis.get = AsyncMock(return_value=json.dumps({
         "url": "https://partner.example.com/hook",
         "secret": "s",
-        "enabled_events": ["*"],
+        "enabled_events": enabled_events or ["*"],
         "payload_mode": "full",
     }))
     redis.rpush = AsyncMock()
@@ -124,7 +129,8 @@ def _make_adapter_with_config():
     return WebhookFanoutAdapter(redis=redis, db_pool=pool), redis
 
 
-def _event(event_type: str, origin: str | None):
+def _event(event_type: str, *, external_id: str | None = "A-999",
+           origin: str | None = "partner_intranet"):
     return ScoreEvent(
         tenant_id=UUID("11111111-1111-1111-1111-111111111111"),
         lead_id=UUID("22222222-2222-2222-2222-222222222222"),
@@ -135,46 +141,85 @@ def _event(event_type: str, origin: str | None):
         path="fast",
         payload={},
         timestamp=datetime(2026, 4, 24, 12, 0, 0),
-        external_id="A-999" if origin else None,
+        external_id=external_id,
         origin_system=origin,
         source="intranet" if origin else None,
     )
 
 
-def test_fanout_suppresses_lead_events_for_partner_origin():
-    adapter, redis = _make_adapter_with_config()
-    asyncio.run(adapter.publish(_event("lead.created", "partner_intranet")))
-    asyncio.run(adapter.publish(_event("lead.updated", "partner_intranet")))
-    redis.rpush.assert_not_called()
+def test_allowlist_contains_lead_qualified():
+    """Spec: lead.qualified is the one event currently fanning out."""
+    assert "lead.qualified" in OUTBOUND_EVENT_ALLOWLIST
 
 
-def test_fanout_allows_score_events_for_partner_origin():
-    """Score updates MUST still flow to partner — that's the integration's point.
-    The body carries external_id so the partner can upsert by foreign ID.
-    """
+def test_fanout_emits_lead_qualified_with_minimal_body():
+    """Body must contain ONLY event_type + external_ref — no score, payload,
+    osint, ensemble, or anything else. Partner contract."""
     adapter, redis = _make_adapter_with_config()
-    asyncio.run(adapter.publish(_event("score.updated", "partner_intranet")))
+    asyncio.run(adapter.publish(_event("lead.qualified", external_id="A-999")))
+
     redis.rpush.assert_called_once()
     _, payload = redis.rpush.call_args.args
     job = json.loads(payload)
     body = json.loads(job["body"])
-    assert body["external_id"] == "A-999"
-    assert body["origin_system"] == "partner_intranet"
-    assert body["source"] == "intranet"
+    assert body == {"event_type": "lead.qualified", "external_ref": "A-999"}
 
 
-def test_fanout_allows_lead_events_for_native_origin():
-    """Lifecycle events from natively-created leads are NOT suppressed."""
+def test_fanout_event_id_is_deterministic():
+    """event_id = '<external_ref>.<event_type>' so retries dedupe identically."""
     adapter, redis = _make_adapter_with_config()
-    asyncio.run(adapter.publish(_event("lead.created", None)))
-    redis.rpush.assert_called_once()
+    asyncio.run(adapter.publish(_event("lead.qualified", external_id="A-999")))
 
-
-def test_fanout_strips_empty_origin_fields_from_body():
-    adapter, redis = _make_adapter_with_config()
-    asyncio.run(adapter.publish(_event("score.updated", None)))
     _, payload = redis.rpush.call_args.args
-    body = json.loads(json.loads(payload)["body"])
-    assert "external_id" not in body
-    assert "origin_system" not in body
-    assert "source" not in body
+    job = json.loads(payload)
+    assert job["event_id"] == "A-999.lead.qualified"
+
+
+def test_fanout_drops_lead_qualified_without_external_ref():
+    """Native CRM lead (no partner upstream) — no one to notify."""
+    adapter, redis = _make_adapter_with_config()
+    asyncio.run(adapter.publish(_event("lead.qualified", external_id=None)))
+    redis.rpush.assert_not_called()
+
+
+def test_fanout_drops_lead_qualified_with_blank_external_ref():
+    """Whitespace-only external_id is treated as missing."""
+    adapter, redis = _make_adapter_with_config()
+    asyncio.run(adapter.publish(_event("lead.qualified", external_id="   ")))
+    redis.rpush.assert_not_called()
+
+
+def test_fanout_drops_score_updated():
+    """score.updated is internal-only now — must never leave the qualifier."""
+    adapter, redis = _make_adapter_with_config()
+    asyncio.run(adapter.publish(_event("score.updated")))
+    redis.rpush.assert_not_called()
+
+
+def test_fanout_drops_pre_score_judged():
+    adapter, redis = _make_adapter_with_config()
+    asyncio.run(adapter.publish(_event("pre_score.judged")))
+    redis.rpush.assert_not_called()
+
+
+def test_fanout_drops_lead_created_and_updated():
+    adapter, redis = _make_adapter_with_config()
+    asyncio.run(adapter.publish(_event("lead.created")))
+    asyncio.run(adapter.publish(_event("lead.updated")))
+    redis.rpush.assert_not_called()
+
+
+def test_fanout_drops_lead_stage_changed():
+    """lead.stage_changed is the upstream signal that PRODUCES lead.qualified;
+    we don't echo the raw transition out — just the milestone."""
+    adapter, redis = _make_adapter_with_config()
+    asyncio.run(adapter.publish(_event("lead.stage_changed")))
+    redis.rpush.assert_not_called()
+
+
+def test_fanout_respects_tenant_opt_out():
+    """Tenant can disable lead.qualified by setting enabled_events to a
+    list that doesn't match."""
+    adapter, redis = _make_adapter_with_config(enabled_events=["score.*"])
+    asyncio.run(adapter.publish(_event("lead.qualified", external_id="A-999")))
+    redis.rpush.assert_not_called()

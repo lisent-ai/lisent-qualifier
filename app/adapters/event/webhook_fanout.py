@@ -2,21 +2,28 @@
 WebhookFanoutAdapter — EventPort that enqueues jobs for outbound webhook
 delivery.
 
-This adapter runs inside the publisher's request/processing context (the
-CHAMP extractor), so it MUST be fast: it looks up the tenant's webhook
-config (cached), serializes the event once, and LPUSHes a job onto the
-shared worker queue. Actual HTTP delivery happens on the background
-`WebhookWorker`.
+Outbound surface is intentionally narrow: only status-milestone events
+(currently `lead.qualified`, later `lead.won` / `lead.lost` /
+`lead.disqualified`) are forwarded to the tenant's configured webhook URL.
+Every other event type the qualifier emits internally — `score.updated`,
+`pre_score.judged`, `lead.created`, `lead.updated`, `lead.stage_changed`,
+etc. — is suppressed at this adapter and never leaves the qualifier.
+
+Body shape is fixed and minimal:
+
+    {"event_type": "lead.qualified", "external_ref": "<partner-lead-id>"}
+
+The partner identifies the lead by the `external_ref` they originally sent
+us at intake; combined with `event_type`, it forms a deterministic
+idempotency key so retries don't double-fire on the receiver.
 
 Design notes:
     - `subscribe` raises — this adapter is publish-only. The composite
       adapter delegates live subscription to RedisPubSubAdapter.
-    - Tenants without a webhook URL configured are a silent no-op — we
-      do not enqueue a job that the worker would instantly drop.
-    - Event filtering is per-tenant: the list of enabled_events (wildcard
-      patterns) lives on the tenants row. Default ['*'] = everything.
-    - Payload mode: 'full' embeds the canonical ScoreEvent body; 'minimal'
-      strips payload detail (consumer pulls via REST). Stored per-tenant.
+    - Tenants without a webhook URL configured are a silent no-op.
+    - Tenants can opt out per event-type via `outbound_webhook_enabled_events`.
+    - `external_ref` is REQUIRED — leads created natively in our CRM (no
+      partner upstream) have no one to notify, so the event is dropped.
 """
 
 from __future__ import annotations
@@ -24,7 +31,6 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import asdict
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -45,31 +51,36 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+# Hard allowlist of event types that may leave the qualifier. Add to this
+# set when a new status milestone needs to fan out (e.g. `lead.won`,
+# `lead.lost`, `lead.disqualified`). Anything not in the set is silently
+# dropped at publish time.
+OUTBOUND_EVENT_ALLOWLIST: frozenset[str] = frozenset({
+    "lead.qualified",
+})
+
+
 class WebhookFanoutAdapter(EventPort):
     def __init__(self, redis: Redis, db_pool: asyncpg.Pool) -> None:
         self._r = redis
         self._pool = db_pool
 
     async def publish(self, event: ScoreEvent) -> None:
-        cfg = await self._tenant_webhook_config(event.tenant_id)
-        if cfg is None:
+        if event.event_type not in OUTBOUND_EVENT_ALLOWLIST:
             return
 
-        # Loop-prevention: suppress lifecycle-style echoes for leads that
-        # originated in the partner CRM. If a partner pushed a lead into our
-        # inbound webhook, firing `lead.created` / `lead.updated` back to the
-        # same partner re-creates the source loop. Scoring events still flow
-        # (`score.*`, `pre_score.*`) because partners explicitly want score
-        # updates — the body carries `external_id` so they can upsert
-        # instead of insert.
-        if event.origin_system == "partner_intranet" and event.event_type.startswith("lead."):
+        external_ref = (event.external_id or "").strip()
+        if not external_ref:
             log.debug(
-                "webhook_loop_suppressed",
+                "webhook_skipped_no_external_ref",
                 tenant_id=str(event.tenant_id),
+                lead_id=str(event.lead_id),
                 event_type=event.event_type,
-                origin_system=event.origin_system,
-                external_id=event.external_id,
             )
+            return
+
+        cfg = await self._tenant_webhook_config(event.tenant_id)
+        if cfg is None:
             return
 
         patterns = cfg.get("enabled_events") or ["*"]
@@ -81,13 +92,18 @@ class WebhookFanoutAdapter(EventPort):
             )
             return
 
-        payload_mode = cfg.get("payload_mode") or "full"
-
+        body = json.dumps(
+            {"event_type": event.event_type, "external_ref": external_ref},
+            separators=(",", ":"),
+        )
+        # Deterministic so retries (worker-internal or upstream) hit the
+        # same key on the receiver. Partner dedupes on (event_type,
+        # external_ref) which this id reflects.
+        event_id = f"{external_ref}.{event.event_type}"
         timestamp_ms = int(event.timestamp.timestamp() * 1000)
-        body = self._serialize_event(event, event_id=str(timestamp_ms), mode=payload_mode)
         job = {
             "tenant_id": str(event.tenant_id),
-            "event_id": str(timestamp_ms),
+            "event_id": event_id,
             "event_type": event.event_type,
             "body": body,
             "attempt": 0,
@@ -98,9 +114,9 @@ class WebhookFanoutAdapter(EventPort):
         log.debug(
             "webhook_enqueued",
             tenant_id=str(event.tenant_id),
-            event_id=timestamp_ms,
+            event_id=event_id,
             event_type=event.event_type,
-            payload_mode=payload_mode,
+            external_ref=external_ref,
         )
 
     async def subscribe(
@@ -183,29 +199,3 @@ class WebhookFanoutAdapter(EventPort):
         except Exception as exc:
             log.debug("webhook_fanout_cache_write_failed", error=str(exc))
         return doc
-
-    @staticmethod
-    def _serialize_event(event: ScoreEvent, *, event_id: str, mode: str = "full") -> str:
-        doc = asdict(event)
-        doc["tenant_id"] = str(event.tenant_id)
-        doc["lead_id"] = str(event.lead_id)
-        doc["session_id"] = str(event.session_id) if event.session_id else None
-        doc["timestamp"] = event.timestamp.isoformat()
-        doc["event_id"] = event_id
-        # Loop-prevention metadata lives at the top level for fast upsert
-        # matching on the receiver without recursing into `payload`.
-        # `asdict` already emits external_id/origin_system/source — drop the
-        # keys when unset to keep the envelope clean.
-        for k in ("external_id", "origin_system", "source"):
-            if doc.get(k) is None:
-                doc.pop(k, None)
-        if mode == "minimal":
-            # Strip the nested payload dict — the consumer can pull detail
-            # from the REST API using (tenant_id, lead_id). Top-level
-            # metadata (score, threshold, event_type) is kept so consumers
-            # can route without a secondary fetch.
-            doc["payload"] = {}
-            doc["payload_mode"] = "minimal"
-        else:
-            doc["payload_mode"] = "full"
-        return json.dumps(doc, separators=(",", ":"))
