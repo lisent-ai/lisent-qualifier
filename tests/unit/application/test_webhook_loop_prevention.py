@@ -1,10 +1,13 @@
-"""Outbound webhook fanout — allowlist + minimal-body contract.
+"""Outbound webhook fanout — allowlist + payload-mode contract.
 
-Outbound surface is restricted to status milestones (currently just
-`lead.qualified`). Body is fixed: `{event_type, external_ref}`. Every
-other event the qualifier emits (`score.*`, `pre_score.*`, lifecycle,
-`lead.stage_changed`) is dropped at the fanout adapter and never leaves
-the service.
+Outbound surface covers all pipeline status events (`lead.stage_changed`,
+`lead.qualified`, `lead.won`, `lead.lost`, `lead.disqualified`). Body
+shape depends on the tenant's `outbound_webhook_payload_mode`:
+  * minimal → `{event_type, external_id}`
+  * full    → adds tenant_id/lead_id/from_stage/to_stage/lead snapshot
+external_id falls back to lead_id when no partner upstream id exists,
+so native CRM leads still trigger webhooks. Pre-pipeline events
+(`score.*`, `pre_score.*`, lifecycle) stay internal.
 
 Loop-prevention tests for `deliver()` (header extraction from body) are
 kept — `deliver` is a generic helper that may still see legacy bodies
@@ -114,14 +117,14 @@ def test_deliver_omits_headers_when_body_has_no_origin():
 # ──────────────────────────────────────────────── fanout allowlist contract
 
 
-def _make_adapter_with_config(enabled_events=None):
+def _make_adapter_with_config(enabled_events=None, payload_mode="minimal"):
     """Adapter wired with an in-memory tenant config cache so publish() skips DB."""
     redis = MagicMock()
     redis.get = AsyncMock(return_value=json.dumps({
         "url": "https://partner.example.com/hook",
         "secret": "s",
         "enabled_events": enabled_events or ["*"],
-        "payload_mode": "full",
+        "payload_mode": payload_mode,
     }))
     redis.rpush = AsyncMock()
     redis.setex = AsyncMock()
@@ -147,50 +150,98 @@ def _event(event_type: str, *, external_id: str | None = "A-999",
     )
 
 
-def test_allowlist_contains_lead_qualified():
-    """Spec: lead.qualified is the one event currently fanning out."""
-    assert "lead.qualified" in OUTBOUND_EVENT_ALLOWLIST
+def test_allowlist_covers_all_pipeline_events():
+    """Spec: every pipeline status milestone fans out."""
+    for ev in (
+        "lead.stage_changed",
+        "lead.qualified",
+        "lead.won",
+        "lead.lost",
+        "lead.disqualified",
+    ):
+        assert ev in OUTBOUND_EVENT_ALLOWLIST
 
 
-def test_fanout_emits_lead_qualified_with_minimal_body():
-    """Body must contain ONLY event_type + external_ref — no score, payload,
-    osint, ensemble, or anything else. Partner contract."""
-    adapter, redis = _make_adapter_with_config()
+def test_fanout_minimal_mode_body_is_event_type_plus_external_id():
+    """`payload_mode=minimal` → only event_type + external_id."""
+    adapter, redis = _make_adapter_with_config(payload_mode="minimal")
     asyncio.run(adapter.publish(_event("lead.qualified", external_id="A-999")))
 
     redis.rpush.assert_called_once()
     _, payload = redis.rpush.call_args.args
     job = json.loads(payload)
     body = json.loads(job["body"])
-    assert body == {"event_type": "lead.qualified", "external_ref": "A-999"}
+    assert body == {"event_type": "lead.qualified", "external_id": "A-999"}
 
 
-def test_fanout_event_id_is_deterministic():
-    """event_id = '<external_ref>.<event_type>' so retries dedupe identically."""
+def test_fanout_full_mode_body_includes_lead_snapshot():
+    """`payload_mode=full` adds tenant/lead ids, stages, and the lead doc."""
+    adapter, redis = _make_adapter_with_config(payload_mode="full")
+    evt = _event("lead.stage_changed", external_id="A-999")
+    evt.payload = {
+        "from_stage": "contacted",
+        "to_stage": "converted",
+        "changed_by": "user-1",
+        "lead": {"id": "lead-1", "name": "Test", "status": "converted"},
+    }
+    asyncio.run(adapter.publish(evt))
+
+    _, payload = redis.rpush.call_args.args
+    body = json.loads(json.loads(payload)["body"])
+    assert body["event_type"] == "lead.stage_changed"
+    assert body["external_id"] == "A-999"
+    assert body["from_stage"] == "contacted"
+    assert body["to_stage"] == "converted"
+    assert body["changed_by"] == "user-1"
+    assert body["lead"]["status"] == "converted"
+    assert body["origin_system"] == "partner_intranet"
+
+
+def test_fanout_event_id_is_deterministic_per_timestamp():
+    """event_id = '<external_id>.<event_type>.<ts_ms>' so concurrent retries
+    dedupe identically while different transitions stay distinct."""
     adapter, redis = _make_adapter_with_config()
     asyncio.run(adapter.publish(_event("lead.qualified", external_id="A-999")))
 
     _, payload = redis.rpush.call_args.args
     job = json.loads(payload)
-    assert job["event_id"] == "A-999.lead.qualified"
+    # 2026-04-24 12:00:00 UTC → 1777377600000
+    assert job["event_id"] == "A-999.lead.qualified.1777377600000"
 
 
-def test_fanout_drops_lead_qualified_without_external_ref():
-    """Native CRM lead (no partner upstream) — no one to notify."""
+def test_fanout_falls_back_to_lead_id_when_no_external_id():
+    """Native CRM lead (no partner upstream) still fires — receiver gets
+    qualifier lead_id as the external_id."""
     adapter, redis = _make_adapter_with_config()
     asyncio.run(adapter.publish(_event("lead.qualified", external_id=None)))
-    redis.rpush.assert_not_called()
+    redis.rpush.assert_called_once()
+    _, payload = redis.rpush.call_args.args
+    body = json.loads(json.loads(payload)["body"])
+    assert body["external_id"] == "22222222-2222-2222-2222-222222222222"
 
 
-def test_fanout_drops_lead_qualified_with_blank_external_ref():
-    """Whitespace-only external_id is treated as missing."""
+def test_fanout_falls_back_when_external_id_blank():
+    """Whitespace-only external_id falls back to lead_id, not dropped."""
     adapter, redis = _make_adapter_with_config()
     asyncio.run(adapter.publish(_event("lead.qualified", external_id="   ")))
-    redis.rpush.assert_not_called()
+    redis.rpush.assert_called_once()
+
+
+def test_fanout_emits_won_and_lost():
+    adapter, redis = _make_adapter_with_config()
+    asyncio.run(adapter.publish(_event("lead.won", external_id="A-1")))
+    asyncio.run(adapter.publish(_event("lead.lost", external_id="A-2")))
+    assert redis.rpush.call_count == 2
+
+
+def test_fanout_emits_stage_changed():
+    adapter, redis = _make_adapter_with_config()
+    asyncio.run(adapter.publish(_event("lead.stage_changed", external_id="A-1")))
+    redis.rpush.assert_called_once()
 
 
 def test_fanout_drops_score_updated():
-    """score.updated is internal-only now — must never leave the qualifier."""
+    """score.updated is internal-only — must never leave the qualifier."""
     adapter, redis = _make_adapter_with_config()
     asyncio.run(adapter.publish(_event("score.updated")))
     redis.rpush.assert_not_called()
@@ -209,17 +260,8 @@ def test_fanout_drops_lead_created_and_updated():
     redis.rpush.assert_not_called()
 
 
-def test_fanout_drops_lead_stage_changed():
-    """lead.stage_changed is the upstream signal that PRODUCES lead.qualified;
-    we don't echo the raw transition out — just the milestone."""
-    adapter, redis = _make_adapter_with_config()
-    asyncio.run(adapter.publish(_event("lead.stage_changed")))
-    redis.rpush.assert_not_called()
-
-
 def test_fanout_respects_tenant_opt_out():
-    """Tenant can disable lead.qualified by setting enabled_events to a
-    list that doesn't match."""
+    """Tenant can disable a pipeline event via enabled_events filtering."""
     adapter, redis = _make_adapter_with_config(enabled_events=["score.*"])
     asyncio.run(adapter.publish(_event("lead.qualified", external_id="A-999")))
     redis.rpush.assert_not_called()

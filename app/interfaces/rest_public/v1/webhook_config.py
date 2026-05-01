@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import secrets as _secrets
-import time
 import uuid
 from datetime import datetime
 from typing import Annotated, Any
@@ -84,8 +83,18 @@ class WebhookPatchResponse(BaseModel):
 
 
 class WebhookTestRequest(BaseModel):
-    lead_id: UUID | None = None  # defaults to a throwaway zero uuid
+    lead_id: UUID | None = None  # defaults to a fresh uuid4
     score: int = Field(default=42, ge=0, le=100)
+    event_type: str = Field(
+        default="lead.stage_changed",
+        description="Pipeline event to fire. Must be one of the outbound-allowlisted types.",
+    )
+    external_id: str | None = Field(
+        default=None,
+        description="Synthetic partner external_id. Defaults to 'test-<uuid>' if omitted.",
+    )
+    from_stage: str = "contacted"
+    to_stage: str = "converted"
 
 
 class WebhookTestResponse(BaseModel):
@@ -302,22 +311,52 @@ async def test_webhook(
             detail="webhook url or secret not configured — PATCH /v1/config/webhook first",
         )
 
+    if body.event_type not in EVENT_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unknown event_type: {body.event_type}",
+        )
+
     lead_id = body.lead_id or uuid.uuid4()
+    external_id = (body.external_id or f"test-{lead_id}").strip()
     ts = datetime.utcnow()
+    # Synthetic but realistically-shaped CRM lead snapshot so the fanout
+    # adapter can render a 'full' payload identical to a real stage change.
+    test_lead = {
+        "id": str(lead_id),
+        "name": "Test Lead",
+        "email": "test@example.com",
+        "phone": "+10000000000",
+        "status": body.to_stage,
+        "source": "webhook_test",
+        "value": 0,
+        "external_id": external_id,
+        "origin_system": "webhook_test",
+    }
     event = ScoreEvent(
         tenant_id=tenant.id,
         lead_id=lead_id,
         session_id=None,
-        event_type="score.updated",
+        event_type=body.event_type,
         score=body.score,
         threshold=75,
-        path="chat",
-        payload={"test": True, "score": body.score},
+        path="crm",
+        payload={
+            "test": True,
+            "from_stage": body.from_stage,
+            "to_stage": body.to_stage,
+            "changed_by": "webhook_test",
+            "changed_at": ts.isoformat(),
+            "lead": test_lead,
+        },
         timestamp=ts,
+        external_id=external_id,
+        origin_system="webhook_test",
+        source="webhook_test",
     )
     await event_port.publish(event)
 
-    event_id = str(int(ts.timestamp() * 1000))
+    event_id = f"{external_id}.{body.event_type}.{int(ts.timestamp() * 1000)}"
     log.info(
         "webhook_test_enqueued",
         tenant_id=str(tenant.id),

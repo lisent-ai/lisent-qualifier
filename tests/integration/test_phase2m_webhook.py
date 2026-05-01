@@ -254,10 +254,11 @@ class TestWebhookFanoutAdapter:
         await init_db_pool(APP_DB_URL)
         adapter = WebhookFanoutAdapter(redis_client, get_db_pool())
 
+        lead_id = uuid.uuid4()
         await adapter.publish(
             ScoreEvent(
                 tenant_id=tenant_hook["id"],
-                lead_id=uuid.uuid4(),
+                lead_id=lead_id,
                 session_id=None,
                 event_type="lead.qualified",
                 score=88,
@@ -274,11 +275,14 @@ class TestWebhookFanoutAdapter:
         assert job["tenant_id"] == str(tenant_hook["id"])
         assert job["event_type"] == "lead.qualified"
         assert job["attempt"] == 0
-        assert job["event_id"] == "partner-lead-001.lead.qualified"
-        assert json.loads(job["body"]) == {
-            "event_type": "lead.qualified",
-            "external_ref": "partner-lead-001",
-        }
+        # event_id format: <external_id>.<event_type>.<ts_ms>
+        assert job["event_id"].startswith("partner-lead-001.lead.qualified.")
+        # tenant default payload_mode is 'full' → body includes the snapshot
+        body = json.loads(job["body"])
+        assert body["event_type"] == "lead.qualified"
+        assert body["external_id"] == "partner-lead-001"
+        assert body["lead_id"] == str(lead_id)
+        assert body["tenant_id"] == str(tenant_hook["id"])
 
     async def test_skips_when_tenant_has_no_webhook(
         self, tenant_no_hook, redis_client

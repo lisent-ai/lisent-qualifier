@@ -2,28 +2,44 @@
 WebhookFanoutAdapter — EventPort that enqueues jobs for outbound webhook
 delivery.
 
-Outbound surface is intentionally narrow: only status-milestone events
-(currently `lead.qualified`, later `lead.won` / `lead.lost` /
-`lead.disqualified`) are forwarded to the tenant's configured webhook URL.
-Every other event type the qualifier emits internally — `score.updated`,
-`pre_score.judged`, `lead.created`, `lead.updated`, `lead.stage_changed`,
-etc. — is suppressed at this adapter and never leaves the qualifier.
+Outbound surface covers every pipeline status milestone — `lead.qualified`,
+`lead.won`, `lead.lost`, `lead.disqualified`, and the umbrella
+`lead.stage_changed` — so a partner's CRM webhook fires on every stage
+transition in real time. Pre-pipeline events (`score.updated`,
+`pre_score.judged`, `lead.created`, `lead.updated`) stay internal.
 
-Body shape is fixed and minimal:
+Body shape is driven by the tenant's `outbound_webhook_payload_mode`:
 
-    {"event_type": "lead.qualified", "external_ref": "<partner-lead-id>"}
+    minimal:
+        {"event_type": "lead.stage_changed", "external_id": "<id>"}
 
-The partner identifies the lead by the `external_ref` they originally sent
-us at intake; combined with `event_type`, it forms a deterministic
-idempotency key so retries don't double-fire on the receiver.
+    full (default):
+        {
+          "event_type":   "lead.stage_changed",
+          "external_id":  "<partner-lead-id-or-fallback>",
+          "tenant_id":    "<uuid>",
+          "lead_id":      "<uuid>",
+          "occurred_at":  "<iso-8601-utc>",
+          "from_stage":   "contacted",
+          "to_stage":     "converted",
+          "changed_by":   "<actor-or-null>",
+          "score":        <int|null>,
+          "lead":         { ...full CRM lead snapshot... },
+          "test":         <true on synthetic test events, omitted otherwise>
+        }
+
+`external_id` falls back to the qualifier `lead_id` when the lead has no
+partner upstream identifier, so native CRM leads still trigger webhooks
+(the partner can still address them by a stable id). The field name
+matches the CRM `leads.external_id` column and the qualifier's
+`ScoreEvent.external_id` so the same identifier flows end-to-end under
+one name.
 
 Design notes:
     - `subscribe` raises — this adapter is publish-only. The composite
       adapter delegates live subscription to RedisPubSubAdapter.
     - Tenants without a webhook URL configured are a silent no-op.
     - Tenants can opt out per event-type via `outbound_webhook_enabled_events`.
-    - `external_ref` is REQUIRED — leads created natively in our CRM (no
-      partner upstream) have no one to notify, so the event is dropped.
 """
 
 from __future__ import annotations
@@ -51,12 +67,16 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-# Hard allowlist of event types that may leave the qualifier. Add to this
-# set when a new status milestone needs to fan out (e.g. `lead.won`,
-# `lead.lost`, `lead.disqualified`). Anything not in the set is silently
-# dropped at publish time.
+# Hard allowlist of event types that may leave the qualifier. Pipeline
+# milestones plus the umbrella `lead.stage_changed` so partners can react
+# to every CRM transition. Pre-pipeline events (score.updated,
+# pre_score.judged, lead.created/updated) stay internal.
 OUTBOUND_EVENT_ALLOWLIST: frozenset[str] = frozenset({
+    "lead.stage_changed",
     "lead.qualified",
+    "lead.won",
+    "lead.lost",
+    "lead.disqualified",
 })
 
 
@@ -69,15 +89,10 @@ class WebhookFanoutAdapter(EventPort):
         if event.event_type not in OUTBOUND_EVENT_ALLOWLIST:
             return
 
-        external_ref = (event.external_id or "").strip()
-        if not external_ref:
-            log.debug(
-                "webhook_skipped_no_external_ref",
-                tenant_id=str(event.tenant_id),
-                lead_id=str(event.lead_id),
-                event_type=event.event_type,
-            )
-            return
+        # Prefer the partner's external_id; fall back to our qualifier
+        # lead_id so native CRM leads still notify the partner. The
+        # receiver can disambiguate via the `origin_system` field below.
+        external_id = (event.external_id or "").strip() or str(event.lead_id)
 
         cfg = await self._tenant_webhook_config(event.tenant_id)
         if cfg is None:
@@ -92,15 +107,33 @@ class WebhookFanoutAdapter(EventPort):
             )
             return
 
-        body = json.dumps(
-            {"event_type": event.event_type, "external_ref": external_ref},
-            separators=(",", ":"),
-        )
+        payload_mode = (cfg.get("payload_mode") or "full").lower()
+        body_doc: dict = {
+            "event_type": event.event_type,
+            "external_id": external_id,
+        }
+        if payload_mode != "minimal":
+            ev_payload = event.payload or {}
+            body_doc.update({
+                "tenant_id": str(event.tenant_id),
+                "lead_id": str(event.lead_id),
+                "occurred_at": event.timestamp.isoformat() + "Z",
+                "from_stage": ev_payload.get("from_stage"),
+                "to_stage": ev_payload.get("to_stage"),
+                "changed_by": ev_payload.get("changed_by"),
+                "score": event.score if event.score else None,
+                "origin_system": event.origin_system,
+                "source": event.source,
+                "lead": ev_payload.get("lead") or {},
+            })
+            if ev_payload.get("test"):
+                body_doc["test"] = True
+        body = json.dumps(body_doc, separators=(",", ":"), default=str)
         # Deterministic so retries (worker-internal or upstream) hit the
         # same key on the receiver. Partner dedupes on (event_type,
-        # external_ref) which this id reflects.
-        event_id = f"{external_ref}.{event.event_type}"
+        # external_id, occurred_at_ms) which this id reflects.
         timestamp_ms = int(event.timestamp.timestamp() * 1000)
+        event_id = f"{external_id}.{event.event_type}.{timestamp_ms}"
         job = {
             "tenant_id": str(event.tenant_id),
             "event_id": event_id,
@@ -116,7 +149,7 @@ class WebhookFanoutAdapter(EventPort):
             tenant_id=str(event.tenant_id),
             event_id=event_id,
             event_type=event.event_type,
-            external_ref=external_ref,
+            external_id=external_id,
         )
 
     async def subscribe(
