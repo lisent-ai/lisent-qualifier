@@ -174,27 +174,43 @@ def test_fanout_minimal_mode_body_is_event_type_plus_external_id():
     assert body == {"event_type": "lead.qualified", "external_id": "A-999"}
 
 
-def test_fanout_full_mode_body_includes_lead_snapshot():
-    """`payload_mode=full` adds tenant/lead ids, stages, and the lead doc."""
+def test_fanout_full_mode_body_includes_payload_envelope():
+    """`payload_mode=full` keeps top-level identification fields and nests
+    stage/lead details under `payload` per partner contract."""
     adapter, redis = _make_adapter_with_config(payload_mode="full")
-    evt = _event("lead.stage_changed", external_id="A-999")
+    evt = _event("lead.qualified", external_id="A-999")
     evt.payload = {
         "from_stage": "contacted",
-        "to_stage": "converted",
+        "to_stage": "qualified",
         "changed_by": "user-1",
-        "lead": {"id": "lead-1", "name": "Test", "status": "converted"},
+        "lead": {"id": "lead-1", "name": "Test", "status": "qualified"},
     }
     asyncio.run(adapter.publish(evt))
 
     _, payload = redis.rpush.call_args.args
     body = json.loads(json.loads(payload)["body"])
-    assert body["event_type"] == "lead.stage_changed"
+    # Top-level shape
+    assert body["event_type"] == "lead.qualified"
     assert body["external_id"] == "A-999"
-    assert body["from_stage"] == "contacted"
-    assert body["to_stage"] == "converted"
-    assert body["changed_by"] == "user-1"
-    assert body["lead"]["status"] == "converted"
     assert body["origin_system"] == "partner_intranet"
+    assert body["source"] == "intranet"
+    # Nested payload envelope
+    inner = body["payload"]
+    assert inner["external_ref"] == "A-999"
+    assert inner["qualified"] is True
+    assert inner["score"] == 80
+    assert inner["stage"] == "qualified"
+    assert inner["from_stage"] == "contacted"
+    assert inner["changed_by"] == "user-1"
+    assert inner["lead"]["status"] == "qualified"
+
+
+def test_fanout_full_mode_qualified_flag_false_for_non_qualified_events():
+    adapter, redis = _make_adapter_with_config(payload_mode="full")
+    asyncio.run(adapter.publish(_event("lead.stage_changed", external_id="A-1")))
+    _, payload = redis.rpush.call_args.args
+    body = json.loads(json.loads(payload)["body"])
+    assert body["payload"]["qualified"] is False
 
 
 def test_fanout_event_id_is_deterministic_per_timestamp():
@@ -212,12 +228,13 @@ def test_fanout_event_id_is_deterministic_per_timestamp():
 def test_fanout_falls_back_to_lead_id_when_no_external_id():
     """Native CRM lead (no partner upstream) still fires — receiver gets
     qualifier lead_id as the external_id."""
-    adapter, redis = _make_adapter_with_config()
+    adapter, redis = _make_adapter_with_config(payload_mode="full")
     asyncio.run(adapter.publish(_event("lead.qualified", external_id=None)))
     redis.rpush.assert_called_once()
     _, payload = redis.rpush.call_args.args
     body = json.loads(json.loads(payload)["body"])
     assert body["external_id"] == "22222222-2222-2222-2222-222222222222"
+    assert body["payload"]["external_ref"] == "22222222-2222-2222-2222-222222222222"
 
 
 def test_fanout_falls_back_when_external_id_blank():

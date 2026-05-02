@@ -277,12 +277,14 @@ class TestWebhookFanoutAdapter:
         assert job["attempt"] == 0
         # event_id format: <external_id>.<event_type>.<ts_ms>
         assert job["event_id"].startswith("partner-lead-001.lead.qualified.")
-        # tenant default payload_mode is 'full' → body includes the snapshot
+        # tenant default payload_mode is 'full' → body has the envelope shape
         body = json.loads(job["body"])
         assert body["event_type"] == "lead.qualified"
         assert body["external_id"] == "partner-lead-001"
-        assert body["lead_id"] == str(lead_id)
-        assert body["tenant_id"] == str(tenant_hook["id"])
+        assert body["payload"]["lead_id"] == str(lead_id)
+        assert body["payload"]["tenant_id"] == str(tenant_hook["id"])
+        assert body["payload"]["external_ref"] == "partner-lead-001"
+        assert body["payload"]["qualified"] is True
 
     async def test_skips_when_tenant_has_no_webhook(
         self, tenant_no_hook, redis_client

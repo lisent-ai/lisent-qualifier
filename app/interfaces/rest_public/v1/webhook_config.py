@@ -84,9 +84,9 @@ class WebhookPatchResponse(BaseModel):
 
 class WebhookTestRequest(BaseModel):
     lead_id: UUID | None = None  # defaults to a fresh uuid4
-    score: int = Field(default=42, ge=0, le=100)
+    score: int = Field(default=77, ge=0, le=100)
     event_type: str = Field(
-        default="lead.stage_changed",
+        default="lead.qualified",
         description="Pipeline event to fire. Must be one of the outbound-allowlisted types.",
     )
     external_id: str | None = Field(
@@ -94,7 +94,9 @@ class WebhookTestRequest(BaseModel):
         description="Synthetic partner external_id. Defaults to 'test-<uuid>' if omitted.",
     )
     from_stage: str = "contacted"
-    to_stage: str = "converted"
+    to_stage: str = "qualified"
+    origin_system: str = "lisent"
+    source: str = "lisent_native"
 
 
 class WebhookTestResponse(BaseModel):
@@ -328,10 +330,10 @@ async def test_webhook(
         "email": "test@example.com",
         "phone": "+10000000000",
         "status": body.to_stage,
-        "source": "webhook_test",
+        "source": body.source,
         "value": 0,
         "external_id": external_id,
-        "origin_system": "webhook_test",
+        "origin_system": body.origin_system,
     }
     event = ScoreEvent(
         tenant_id=tenant.id,
@@ -351,8 +353,8 @@ async def test_webhook(
         },
         timestamp=ts,
         external_id=external_id,
-        origin_system="webhook_test",
-        source="webhook_test",
+        origin_system=body.origin_system,
+        source=body.source,
     )
     await event_port.publish(event)
 

@@ -11,29 +11,34 @@ transition in real time. Pre-pipeline events (`score.updated`,
 Body shape is driven by the tenant's `outbound_webhook_payload_mode`:
 
     minimal:
-        {"event_type": "lead.stage_changed", "external_id": "<id>"}
+        {"event_type": "lead.qualified", "external_id": "<id>"}
 
     full (default):
         {
-          "event_type":   "lead.stage_changed",
-          "external_id":  "<partner-lead-id-or-fallback>",
-          "tenant_id":    "<uuid>",
-          "lead_id":      "<uuid>",
-          "occurred_at":  "<iso-8601-utc>",
-          "from_stage":   "contacted",
-          "to_stage":     "converted",
-          "changed_by":   "<actor-or-null>",
-          "score":        <int|null>,
-          "lead":         { ...full CRM lead snapshot... },
-          "test":         <true on synthetic test events, omitted otherwise>
+          "event_type":    "lead.qualified",
+          "external_id":   "<partner-lead-id-or-fallback>",
+          "source":        "<channel-or-null>",
+          "origin_system": "<lisent|partner_intranet|...>",
+          "payload": {
+            "external_ref": "<same as top-level external_id>",
+            "qualified":    <bool — true on lead.qualified/won>,
+            "score":        <int|null>,
+            "stage":        "<to_stage>",
+            "from_stage":   "<previous stage|null>",
+            "tenant_id":    "<uuid>",
+            "lead_id":      "<uuid>",
+            "occurred_at":  "<iso-8601-utc>",
+            "changed_by":   "<actor|null>",
+            "lead":         { ...CRM lead snapshot... },
+            "test":         <true on synthetic test events>
+          }
         }
 
 `external_id` falls back to the qualifier `lead_id` when the lead has no
-partner upstream identifier, so native CRM leads still trigger webhooks
-(the partner can still address them by a stable id). The field name
-matches the CRM `leads.external_id` column and the qualifier's
-`ScoreEvent.external_id` so the same identifier flows end-to-end under
-one name.
+partner upstream identifier, so native CRM leads still trigger webhooks.
+The field name matches the CRM `leads.external_id` column and the
+qualifier's `ScoreEvent.external_id` so the same identifier flows
+end-to-end under one name.
 
 Design notes:
     - `subscribe` raises — this adapter is publish-only. The composite
@@ -114,20 +119,27 @@ class WebhookFanoutAdapter(EventPort):
         }
         if payload_mode != "minimal":
             ev_payload = event.payload or {}
-            body_doc.update({
+            qualified = event.event_type in ("lead.qualified", "lead.won")
+            stage = ev_payload.get("to_stage")
+            inner: dict = {
+                "external_ref": external_id,
+                "qualified": qualified,
+                "score": event.score if event.score else None,
+                "stage": stage,
+                "from_stage": ev_payload.get("from_stage"),
                 "tenant_id": str(event.tenant_id),
                 "lead_id": str(event.lead_id),
                 "occurred_at": event.timestamp.isoformat() + "Z",
-                "from_stage": ev_payload.get("from_stage"),
-                "to_stage": ev_payload.get("to_stage"),
                 "changed_by": ev_payload.get("changed_by"),
-                "score": event.score if event.score else None,
-                "origin_system": event.origin_system,
-                "source": event.source,
                 "lead": ev_payload.get("lead") or {},
-            })
+            }
             if ev_payload.get("test"):
-                body_doc["test"] = True
+                inner["test"] = True
+            body_doc.update({
+                "source": event.source,
+                "origin_system": event.origin_system,
+                "payload": inner,
+            })
         body = json.dumps(body_doc, separators=(",", ":"), default=str)
         # Deterministic so retries (worker-internal or upstream) hit the
         # same key on the receiver. Partner dedupes on (event_type,
